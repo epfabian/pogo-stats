@@ -46,32 +46,32 @@ def startup():
 
 
 @app.get("/api/summary")
-def summary():
-    return db.get_summary()
+def summary(tz: str = "UTC"):
+    return db.get_summary(tz=tz)
 
 
 @app.get("/api/timeseries")
-def timeseries(days: int = 30):
-    return db.get_timeseries(days=days)
+def timeseries(days: int = 30, tz: str = "UTC"):
+    return db.get_timeseries(days=days, tz=tz)
 
 
 @app.get("/api/top-species")
-def top_species(days: int = 30, limit: int = 10):
-    return db.get_top_species(days=days, limit=limit)
+def top_species(days: int = 30, limit: int = 10, tz: str = "UTC"):
+    return db.get_top_species(days=days, limit=limit, tz=tz)
 
 
 @app.get("/api/day/{day}")
-def day_stats(day: str):
+def day_stats(day: str, tz: str = "UTC"):
     try:
         date.fromisoformat(day)
     except ValueError:
         raise HTTPException(400, "Date must be in YYYY-MM-DD format")
-    return db.get_day_stats(day)
+    return db.get_day_stats(day, tz=tz)
 
 
 @app.get("/api/calendar/{year}/{month}")
-def calendar_month(year: int, month: int):
-    return db.get_calendar_month(year, month)
+def calendar_month(year: int, month: int, tz: str = "UTC"):
+    return db.get_calendar_month(year, month, tz=tz)
 
 
 @app.get("/api/last-location")
@@ -113,13 +113,13 @@ def history(limit: int = 50, offset: int = 0, type: str = "all", include_raids: 
 
 
 @app.get("/api/raids/summary")
-def raids_summary():
-    return db.get_raid_summary()
+def raids_summary(tz: str = "UTC"):
+    return db.get_raid_summary(tz=tz)
 
 
 @app.get("/api/raids/top-species")
-def raids_top_species(days: int = 30, limit: int = 10):
-    return db.get_raid_top_species(days=days, limit=limit)
+def raids_top_species(days: int = 30, limit: int = 10, tz: str = "UTC"):
+    return db.get_raid_top_species(days=days, limit=limit, tz=tz)
 
 
 @app.get("/api/raids/history")

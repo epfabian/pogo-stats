@@ -84,18 +84,6 @@ On Windows you can also just run `start.bat`, which starts both processes
 and opens the dashboard in your browser automatically. Use `stop.bat` to
 stop them again.
 
-## Security note
-
-The backend has no authentication and no CORS restrictions
-(`allow_origins=["*"]`) - it's built for trusted, local/LAN use only.
-Endpoints like `/api/history` and `/api/locations` return trainer names and
-GPS coordinates of catches to anyone who can reach them. If you expose port
-8000 to the public internet (e.g. via port forwarding, a reverse proxy, or
-a cloud VM with an open firewall) without adding your own authentication in
-front of it, that personal and location data becomes accessible to
-strangers. Keep this behind your home network, a VPN, or an authenticated
-reverse proxy if you need remote access.
-
 ## Features
 
 - **Dashboard** - live clock, last-catch map, today/week/all-time metrics,

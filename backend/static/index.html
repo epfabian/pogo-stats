@@ -148,6 +148,9 @@
         <option value="30" selected>Last 30 Days</option>
         <option value="90">Last 90 Days</option>
       </select>
+      <label for="setting-timezone" class="top-species" style="margin-top: 12px; display: block;">Timezone:</label>
+      <select id="setting-timezone" onchange="onTimezoneChange()"></select>
+      <p class="settings-hint">Controls what counts as "today" and how the calendar/charts group catches by day. Defaults to your browser's timezone.</p>
     </div>
 
     <div class="card settings-card">

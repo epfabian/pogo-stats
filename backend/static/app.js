@@ -17,10 +17,10 @@ function ivPercent(atk, def, sta) {
 function updateClock() {
   const now = new Date();
   document.getElementById("clock-time").textContent = now.toLocaleTimeString("en-US", {
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: userTimezone,
   });
   document.getElementById("clock-date").textContent = now.toLocaleDateString("en-US", {
-    weekday: "long", day: "numeric", month: "long", year: "numeric",
+    weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: userTimezone,
   });
 }
 
@@ -158,6 +158,19 @@ let hideTrainerName = localStorage.getItem("pogostats_hide_trainer") === "true";
 // How many days back the dashboard/raids charts look, configurable in Settings.
 let chartDays = parseInt(localStorage.getItem("pogostats_chart_days") || "30", 10);
 
+// Which timezone "today"/the calendar/the clock are based on. Defaults to
+// whatever the browser reports (so it's correct out of the box even if the
+// server itself runs in UTC, which is the common case), but can be
+// overridden in Settings - e.g. to check stats while traveling.
+function detectBrowserTimezone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch (e) {
+    return "UTC";
+  }
+}
+let userTimezone = localStorage.getItem("pogostats_timezone") || detectBrowserTimezone();
+
 // Notification preferences - all off by default until the user opts in.
 let notifyShiny = localStorage.getItem("pogostats_notify_shiny") === "true";
 let notifyIv100 = localStorage.getItem("pogostats_notify_iv100") === "true";
@@ -203,6 +216,7 @@ function refreshTab(tab) {
   } else if (tab === "settings") {
     document.getElementById("setting-hide-trainer").checked = hideTrainerName;
     document.getElementById("setting-chart-days").value = String(chartDays);
+    document.getElementById("setting-timezone").value = userTimezone;
     document.getElementById("setting-notify-shiny").checked = notifyShiny;
     document.getElementById("setting-notify-iv100").checked = notifyIv100;
     document.getElementById("setting-notify-shiny-iv100").checked = notifyShinyIv100;
@@ -236,6 +250,50 @@ function onChartDaysChange() {
   updateChartTitles();
   loadTimeseries();
   loadTopSpecies();
+  loadRaidTopSpecies();
+}
+
+// A short, curated fallback list for browsers that don't support
+// Intl.supportedValuesOf (older Safari/WebKit) - covers the common cases.
+// Modern Chrome/Firefox/Edge get the full IANA list instead.
+const FALLBACK_TIMEZONES = [
+  "UTC", "Europe/Berlin", "Europe/London", "Europe/Paris", "Europe/Madrid",
+  "Europe/Rome", "Europe/Amsterdam", "Europe/Warsaw", "Europe/Moscow",
+  "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles",
+  "America/Sao_Paulo", "Asia/Tokyo", "Asia/Shanghai", "Asia/Kolkata",
+  "Asia/Singapore", "Asia/Dubai", "Australia/Sydney", "Pacific/Auckland",
+];
+
+function populateTimezoneOptions() {
+  const select = document.getElementById("setting-timezone");
+  let zones;
+  try {
+    zones = Intl.supportedValuesOf("timeZone");
+  } catch (e) {
+    zones = FALLBACK_TIMEZONES;
+  }
+  // Make sure the currently active timezone is always selectable, even if
+  // it's not in the fallback list (e.g. browser-detected but list is short).
+  if (!zones.includes(userTimezone)) {
+    zones = [userTimezone, ...zones];
+  }
+  select.innerHTML = zones
+    .map((z) => '<option value="' + z + '">' + z.replace(/_/g, " ") + "</option>")
+    .join("");
+  select.value = userTimezone;
+}
+
+function onTimezoneChange() {
+  userTimezone = document.getElementById("setting-timezone").value;
+  localStorage.setItem("pogostats_timezone", userTimezone);
+  updateClock();
+  // Timezone affects every day-boundary calculation, so refresh everything
+  // that depends on one - not just the currently visible tab.
+  loadSummary();
+  loadTimeseries();
+  loadTopSpecies();
+  loadCalendar(currentYear, currentMonth);
+  loadRaidSummary();
   loadRaidTopSpecies();
 }
 
@@ -359,7 +417,7 @@ async function checkForNewCatchNotifications() {
 }
 
 async function loadSummary() {
-  const res = await fetch("/api/summary");
+  const res = await fetch("/api/summary?tz=" + encodeURIComponent(userTimezone));
   const data = await res.json();
   document.getElementById("stat-today").textContent = data.today;
   document.getElementById("stat-week").textContent = data.week;
@@ -376,7 +434,7 @@ let lastTopSpeciesData = null;
 let lastRaidTopSpeciesData = null;
 
 async function loadTimeseries() {
-  const res = await fetch("/api/timeseries?days=" + chartDays);
+  const res = await fetch("/api/timeseries?days=" + chartDays + "&tz=" + encodeURIComponent(userTimezone));
   const data = await res.json();
   const serialized = JSON.stringify(data);
   if (serialized === lastTimeseriesData && lineChart) return;
@@ -416,7 +474,7 @@ async function loadTimeseries() {
 }
 
 async function loadTopSpecies() {
-  const res = await fetch("/api/top-species?days=" + chartDays + "&limit=8");
+  const res = await fetch("/api/top-species?days=" + chartDays + "&limit=8&tz=" + encodeURIComponent(userTimezone));
   const data = await res.json();
   const serialized = JSON.stringify(data);
   if (serialized === lastTopSpeciesData && barChart) return;
@@ -447,7 +505,7 @@ async function loadTopSpecies() {
 }
 
 async function loadCalendar(year, month) {
-  const res = await fetch("/api/calendar/" + year + "/" + month);
+  const res = await fetch("/api/calendar/" + year + "/" + month + "?tz=" + encodeURIComponent(userTimezone));
   const data = await res.json();
   renderCalendar(year, month, data);
 }
@@ -493,7 +551,7 @@ async function selectDay(dateStr, cellEl) {
   document.querySelectorAll(".cal-cell.selected").forEach((el) => el.classList.remove("selected"));
   if (cellEl) cellEl.classList.add("selected");
 
-  const res = await fetch("/api/day/" + dateStr);
+  const res = await fetch("/api/day/" + dateStr + "?tz=" + encodeURIComponent(userTimezone));
   const data = await res.json();
   const panel = document.getElementById("day-detail");
   const dateLabel = new Date(dateStr + "T00:00:00")
@@ -651,7 +709,7 @@ const raidHistoryLimit = 50;
 let raidHistoryTotal = 0;
 
 async function loadRaidSummary() {
-  const res = await fetch("/api/raids/summary");
+  const res = await fetch("/api/raids/summary?tz=" + encodeURIComponent(userTimezone));
   const data = await res.json();
   document.getElementById("raid-stat-today").textContent = data.today;
   document.getElementById("raid-stat-week").textContent = data.week;
@@ -661,7 +719,7 @@ async function loadRaidSummary() {
 }
 
 async function loadRaidTopSpecies() {
-  const res = await fetch("/api/raids/top-species?days=" + chartDays + "&limit=8");
+  const res = await fetch("/api/raids/top-species?days=" + chartDays + "&limit=8&tz=" + encodeURIComponent(userTimezone));
   const data = await res.json();
   const serialized = JSON.stringify(data);
   if (serialized === lastRaidTopSpeciesData && raidBarChart) return;
@@ -722,6 +780,7 @@ function loadMoreRaidHistory() {
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("setting-hide-trainer").checked = hideTrainerName;
   document.getElementById("setting-chart-days").value = String(chartDays);
+  populateTimezoneOptions();
   document.getElementById("setting-notify-shiny").checked = notifyShiny;
   document.getElementById("setting-notify-iv100").checked = notifyIv100;
   document.getElementById("setting-notify-shiny-iv100").checked = notifyShinyIv100;

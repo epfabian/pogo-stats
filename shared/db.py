@@ -15,6 +15,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Time window within which a catch and a raid catch with identical
 # trainer/Pokemon/IV are considered the same real-world event (see
@@ -24,6 +25,58 @@ DEDUPE_WINDOW_SECONDS = 300
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "pogo_stats.db"
 BACKUP_DIR = Path(__file__).resolve().parent.parent / "data" / "backups"
 BACKUP_KEEP = 7
+
+# "Today"/calendar day boundaries default to UTC unless the frontend sends a
+# specific IANA timezone name (Settings -> Timezone, auto-detected from the
+# browser by default). All catch timestamps are stored as naive UTC, so
+# every day-boundary calculation below converts through this the same way:
+# resolve the target tz, work out local midnight, convert that back to a
+# naive UTC string, and compare/bucket against that.
+DEFAULT_TZ = "UTC"
+
+
+def _resolve_tz(tz_name):
+    """Falls back to UTC for a missing, empty, or unrecognized timezone name,
+    so a bad/unavailable tz string from the client can never break a query -
+    it just behaves like before this feature existed (UTC).
+
+    Also falls back to Python's built-in fixed-offset UTC (datetime.timezone.utc,
+    which needs no external tz database at all) if the system has NO IANA
+    tzdata available whatsoever - e.g. the tzdata pip package isn't installed
+    and the OS doesn't ship one either (seen on a fresh Windows Python
+    install). Without this, an incomplete environment would 500 on every
+    stats endpoint instead of just not being able to localize to non-UTC
+    zones yet."""
+    try:
+        return ZoneInfo(tz_name) if tz_name else ZoneInfo(DEFAULT_TZ)
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        pass
+    try:
+        return ZoneInfo(DEFAULT_TZ)
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        return timezone.utc
+
+
+def _local_today(tz_name):
+    """Today's calendar date in the given timezone (NOT the server's own
+    system timezone, and NOT UTC unless that's what was requested)."""
+    return datetime.now(_resolve_tz(tz_name)).date()
+
+
+def _local_midnight_to_utc_naive(local_date, tz_name):
+    """Converts local midnight of `local_date` in the given timezone into the
+    naive UTC datetime string format `ts` is stored in, so it can be used
+    directly in comparisons against the ts column."""
+    tz = _resolve_tz(tz_name)
+    local_midnight = datetime(local_date.year, local_date.month, local_date.day, tzinfo=tz)
+    return local_midnight.astimezone(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+
+
+def _utc_naive_to_local_date(ts_str, tz_name):
+    """The reverse direction: given a naive-UTC ts string from the database,
+    returns the calendar date it falls on in the given timezone."""
+    dt = datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc)
+    return dt.astimezone(_resolve_tz(tz_name)).date().isoformat()
 
 
 def _apply_pragmas(conn):
@@ -266,27 +319,29 @@ def _count_raids(conn, where, params=()):
     return 0
 
 
-def get_raid_summary(db_path=DB_PATH):
-    today_iso = date.today().isoformat()
-    week_start_iso = (date.today() - timedelta(days=date.today().weekday())).isoformat()
+def get_raid_summary(db_path=DB_PATH, tz=DEFAULT_TZ):
+    today = _local_today(tz)
+    today_bound = _local_midnight_to_utc_naive(today, tz)
+    week_bound = _local_midnight_to_utc_naive(today - timedelta(days=today.weekday()), tz)
     with get_conn(db_path) as conn:
         summary = {}
-        summary["today"] = _count_raids(conn, "ts >= ?", (today_iso,))
-        summary["week"] = _count_raids(conn, "ts >= ?", (week_start_iso,))
+        summary["today"] = _count_raids(conn, "ts >= ?", (today_bound,))
+        summary["week"] = _count_raids(conn, "ts >= ?", (week_bound,))
         summary["all_time"] = _count_raids(conn, "1=1")
-        summary["shiny_today"] = _count_raids(conn, "shiny=1 AND ts >= ?", (today_iso,))
-        summary["iv100_today"] = _count_raids(conn, "iv100=1 AND ts >= ?", (today_iso,))
+        summary["shiny_today"] = _count_raids(conn, "shiny=1 AND ts >= ?", (today_bound,))
+        summary["iv100_today"] = _count_raids(conn, "iv100=1 AND ts >= ?", (today_bound,))
         return summary
 
 
-def get_raid_top_species(days=30, limit=10, db_path=DB_PATH):
+def get_raid_top_species(days=30, limit=10, db_path=DB_PATH, tz=DEFAULT_TZ):
+    cutoff_bound = _local_midnight_to_utc_naive(_local_today(tz) - timedelta(days=days), tz)
     with get_conn(db_path) as conn:
         query = (
             "SELECT pokemon_id, pokemon_name, COUNT(*) AS c FROM raids "
-            "WHERE ts >= date('now', ?) "
+            "WHERE ts >= ? "
             "GROUP BY pokemon_id, pokemon_name ORDER BY c DESC LIMIT ?"
         )
-        rows = conn.execute(query, ("-" + str(days) + " days", limit)).fetchall()
+        rows = conn.execute(query, (cutoff_bound, limit)).fetchall()
         output = []
         for row in rows:
             output.append({
@@ -341,61 +396,66 @@ def _count(conn, where, params=()):
     return 0
 
 
-def get_summary(db_path=DB_PATH):
-    today_iso = date.today().isoformat()
-    week_start_iso = (date.today() - timedelta(days=date.today().weekday())).isoformat()
+def get_summary(db_path=DB_PATH, tz=DEFAULT_TZ):
+    today = _local_today(tz)
+    today_bound = _local_midnight_to_utc_naive(today, tz)
+    week_bound = _local_midnight_to_utc_naive(today - timedelta(days=today.weekday()), tz)
     with get_conn(db_path) as conn:
         summary = {}
-        summary["today"] = _count(conn, "event_type='catch' AND ts >= ?", (today_iso,))
-        summary["week"] = _count(conn, "event_type='catch' AND ts >= ?", (week_start_iso,))
+        summary["today"] = _count(conn, "event_type='catch' AND ts >= ?", (today_bound,))
+        summary["week"] = _count(conn, "event_type='catch' AND ts >= ?", (week_bound,))
         summary["all_time"] = _count(conn, "event_type='catch'")
-        summary["shiny_today"] = _count(conn, "event_type='catch' AND shiny=1 AND ts >= ?", (today_iso,))
-        summary["iv100_today"] = _count(conn, "event_type='catch' AND iv100=1 AND ts >= ?", (today_iso,))
-        summary["flee_today"] = _count(conn, "event_type='flee' AND ts >= ?", (today_iso,))
+        summary["shiny_today"] = _count(conn, "event_type='catch' AND shiny=1 AND ts >= ?", (today_bound,))
+        summary["iv100_today"] = _count(conn, "event_type='catch' AND iv100=1 AND ts >= ?", (today_bound,))
+        summary["flee_today"] = _count(conn, "event_type='flee' AND ts >= ?", (today_bound,))
         return summary
 
 
-def get_timeseries(days=30, db_path=DB_PATH):
+def get_timeseries(days=30, db_path=DB_PATH, tz=DEFAULT_TZ):
+    # SQLite has no notion of IANA timezones/DST, so day-bucketing can't
+    # happen in SQL here - fetch the raw timestamps in range and bucket them
+    # by local calendar date in Python instead.
+    cutoff_bound = _local_midnight_to_utc_naive(_local_today(tz) - timedelta(days=days), tz)
     with get_conn(db_path) as conn:
-        query = (
-            "SELECT substr(ts, 1, 10) AS day, COUNT(*) AS c FROM catches "
-            "WHERE event_type='catch' AND ts >= date('now', ?) "
-            "GROUP BY day ORDER BY day"
-        )
-        rows = conn.execute(query, ("-" + str(days) + " days",)).fetchall()
-        output = []
-        for row in rows:
-            output.append({"day": row["day"], "count": row["c"]})
-        return output
+        query = "SELECT ts FROM catches WHERE event_type='catch' AND ts >= ?"
+        rows = conn.execute(query, (cutoff_bound,)).fetchall()
+    counts = {}
+    for row in rows:
+        local_day = _utc_naive_to_local_date(row["ts"], tz)
+        counts[local_day] = counts.get(local_day, 0) + 1
+    return [{"day": day, "count": count} for day, count in sorted(counts.items())]
 
 
-def get_top_species(days=30, limit=10, db_path=DB_PATH):
+def get_top_species(days=30, limit=10, db_path=DB_PATH, tz=DEFAULT_TZ):
+    cutoff_bound = _local_midnight_to_utc_naive(_local_today(tz) - timedelta(days=days), tz)
     with get_conn(db_path) as conn:
         query = (
             "SELECT pokemon_name, COUNT(*) AS c FROM catches "
-            "WHERE event_type='catch' AND ts >= date('now', ?) "
+            "WHERE event_type='catch' AND ts >= ? "
             "GROUP BY pokemon_name ORDER BY c DESC LIMIT ?"
         )
-        rows = conn.execute(query, ("-" + str(days) + " days", limit)).fetchall()
+        rows = conn.execute(query, (cutoff_bound, limit)).fetchall()
         output = []
         for row in rows:
             output.append({"name": row["pokemon_name"], "count": row["c"]})
         return output
 
 
-def get_day_stats(day, db_path=DB_PATH):
-    like = day + "%"
+def get_day_stats(day, db_path=DB_PATH, tz=DEFAULT_TZ):
+    local_date = date.fromisoformat(day)
+    start = _local_midnight_to_utc_naive(local_date, tz)
+    end = _local_midnight_to_utc_naive(local_date + timedelta(days=1), tz)
     with get_conn(db_path) as conn:
-        catches = _count(conn, "event_type='catch' AND ts LIKE ?", (like,))
-        shiny = _count(conn, "event_type='catch' AND shiny=1 AND ts LIKE ?", (like,))
-        iv100 = _count(conn, "event_type='catch' AND iv100=1 AND ts LIKE ?", (like,))
-        flee = _count(conn, "event_type='flee' AND ts LIKE ?", (like,))
+        catches = _count(conn, "event_type='catch' AND ts >= ? AND ts < ?", (start, end))
+        shiny = _count(conn, "event_type='catch' AND shiny=1 AND ts >= ? AND ts < ?", (start, end))
+        iv100 = _count(conn, "event_type='catch' AND iv100=1 AND ts >= ? AND ts < ?", (start, end))
+        flee = _count(conn, "event_type='flee' AND ts >= ? AND ts < ?", (start, end))
         query = (
             "SELECT pokemon_id, pokemon_name, COUNT(*) AS c FROM catches "
-            "WHERE event_type='catch' AND ts LIKE ? "
+            "WHERE event_type='catch' AND ts >= ? AND ts < ? "
             "GROUP BY pokemon_id, pokemon_name ORDER BY c DESC LIMIT 5"
         )
-        top_rows = conn.execute(query, (like,)).fetchall()
+        top_rows = conn.execute(query, (start, end)).fetchall()
         top_species = []
         for row in top_rows:
             top_species.append({
@@ -404,15 +464,15 @@ def get_day_stats(day, db_path=DB_PATH):
                 "count": row["c"],
             })
 
-        raids = _count_raids(conn, "ts LIKE ?", (like,))
-        raid_shiny = _count_raids(conn, "shiny=1 AND ts LIKE ?", (like,))
-        raid_iv100 = _count_raids(conn, "iv100=1 AND ts LIKE ?", (like,))
+        raids = _count_raids(conn, "ts >= ? AND ts < ?", (start, end))
+        raid_shiny = _count_raids(conn, "shiny=1 AND ts >= ? AND ts < ?", (start, end))
+        raid_iv100 = _count_raids(conn, "iv100=1 AND ts >= ? AND ts < ?", (start, end))
         raid_query = (
             "SELECT pokemon_id, pokemon_name, COUNT(*) AS c FROM raids "
-            "WHERE ts LIKE ? "
+            "WHERE ts >= ? AND ts < ? "
             "GROUP BY pokemon_id, pokemon_name ORDER BY c DESC LIMIT 5"
         )
-        raid_top_rows = conn.execute(raid_query, (like,)).fetchall()
+        raid_top_rows = conn.execute(raid_query, (start, end)).fetchall()
         raid_top_species = []
         for row in raid_top_rows:
             raid_top_species.append({
@@ -498,21 +558,34 @@ def get_history(limit=50, offset=0, event_type=None, include_raids=False, db_pat
         return result
 
 
-def get_calendar_month(year, month, db_path=DB_PATH):
-    prefix = "{:04d}-{:02d}".format(year, month)
+def get_calendar_month(year, month, db_path=DB_PATH, tz=DEFAULT_TZ):
+    # Same reasoning as get_timeseries: bucket by local calendar date in
+    # Python, since SQLite can't do IANA/DST-aware date math. Fetch a
+    # one-day-padded UTC range so catches near local midnight that land on a
+    # different UTC date are still picked up, then discard anything that
+    # falls outside the requested month once converted to local dates.
+    first_day = date(year, month, 1)
+    next_month_first = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    fetch_start = _local_midnight_to_utc_naive(first_day - timedelta(days=1), tz)
+    fetch_end = _local_midnight_to_utc_naive(next_month_first + timedelta(days=1), tz)
+
     with get_conn(db_path) as conn:
-        query = (
-            "SELECT substr(ts, 1, 10) AS day, "
-            "SUM(CASE WHEN event_type='catch' THEN 1 ELSE 0 END) AS catches, "
-            "SUM(CASE WHEN event_type='catch' AND shiny=1 THEN 1 ELSE 0 END) AS shiny "
-            "FROM catches WHERE substr(ts, 1, 7) = ? GROUP BY day"
-        )
-        rows = conn.execute(query, (prefix,)).fetchall()
-        result = {}
-        for row in rows:
-            day_key = row["day"]
-            result[day_key] = {"catches": row["catches"], "shiny": row["shiny"]}
-        return result
+        query = "SELECT ts, event_type, shiny FROM catches WHERE ts >= ? AND ts < ?"
+        rows = conn.execute(query, (fetch_start, fetch_end)).fetchall()
+
+    first_day_iso = first_day.isoformat()
+    next_month_first_iso = next_month_first.isoformat()
+    result = {}
+    for row in rows:
+        local_day = _utc_naive_to_local_date(row["ts"], tz)
+        if not (first_day_iso <= local_day < next_month_first_iso):
+            continue
+        bucket = result.setdefault(local_day, {"catches": 0, "shiny": 0})
+        if row["event_type"] == "catch":
+            bucket["catches"] += 1
+            if row["shiny"]:
+                bucket["shiny"] += 1
+    return result
 
 
 def get_all_locations(db_path=DB_PATH):
