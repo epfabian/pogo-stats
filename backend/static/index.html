@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PoGo Stats</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+</head>
+<body>
+<div class="app">
+
+  <div class="tabs">
+    <div class="tabs-primary">
+      <button class="tab-btn active" id="btn-dashboard" onclick="showTab('dashboard')">Dashboard</button>
+      <button class="tab-btn" id="btn-calendar" onclick="showTab('calendar')">Calendar</button>
+      <button class="tab-btn" id="btn-history" onclick="showTab('history')">History</button>
+      <button class="tab-btn" id="btn-raids" onclick="showTab('raids')">Raids</button>
+    </div>
+    <div class="tabs-secondary">
+      <button class="tab-btn" id="btn-settings" onclick="showTab('settings')">Settings</button>
+      <button class="tab-btn" id="btn-about" onclick="showTab('about')">About</button>
+    </div>
+  </div>
+
+  <div class="tab-content visible" id="tab-dashboard">
+    <div class="hero">
+      <div class="clock-card">
+        <p class="clock-time" id="clock-time">--:--</p>
+        <p class="clock-date" id="clock-date">-</p>
+      </div>
+      <div class="map-card">
+        <h3>Last Catch Location</h3>
+        <div class="map-wrap" id="map-wrap">
+          <div id="last-location-map"></div>
+          <p class="map-empty" id="map-empty">No location data yet.</p>
+        </div>
+        <p class="map-caption" id="last-location-caption"></p>
+      </div>
+    </div>
+    <div class="metrics">
+      <div class="metric-card"><p class="label">Catches Today</p><p class="value" id="stat-today">-</p></div>
+      <div class="metric-card"><p class="label">This Week</p><p class="value" id="stat-week">-</p></div>
+      <div class="metric-card"><p class="label">All Time</p><p class="value" id="stat-all">-</p></div>
+      <div class="metric-card shiny"><p class="label">Shinies Today</p><p class="value" id="stat-shiny">-</p></div>
+      <div class="metric-card iv100"><p class="label">100% IV Today</p><p class="value" id="stat-iv100">-</p></div>
+    </div>
+    <div class="charts">
+      <div class="card">
+        <h3 id="line-chart-title">Catches - Last 30 Days</h3>
+        <div class="chart-wrap"><canvas id="lineChart"></canvas></div>
+      </div>
+      <div class="card">
+        <h3 id="bar-chart-title">Top Pokemon (30 Days)</h3>
+        <div class="chart-wrap"><canvas id="barChart"></canvas></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top: 16px;">
+      <h3>Catch Density Heatmap</h3>
+      <div class="map-wrap heatmap-wrap">
+        <div id="heatmap"></div>
+        <p class="map-empty" id="heatmap-empty">No location data yet.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-calendar">
+    <div class="cal-header">
+      <button onclick="changeMonth(-1)">&#8592;</button>
+      <span class="label" id="calendar-label">-</span>
+      <button onclick="changeMonth(1)">&#8594;</button>
+    </div>
+    <div class="cal-grid" id="calendar-grid"></div>
+    <div class="card" id="day-detail">
+      <p class="top-species">Click a day in the calendar to see details.</p>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-history">
+    <div class="history-toolbar">
+      <label for="history-filter" class="top-species">Filter:</label>
+      <select id="history-filter" onchange="onHistoryFilterChange()">
+        <option value="all">All</option>
+        <option value="catch">Catches Only</option>
+        <option value="flee">Flees Only</option>
+      </select>
+      <label class="history-raid-toggle">
+        <input type="checkbox" id="history-include-raids" onchange="onHistoryFilterChange()">
+        Show raid catches
+      </label>
+    </div>
+    <div class="history-list" id="history-list"></div>
+    <button class="load-more" id="history-load-more" onclick="loadMoreHistory()">Load More</button>
+  </div>
+
+  <div class="tab-content" id="tab-raids">
+    <div class="metrics">
+      <div class="metric-card"><p class="label">Raids Today</p><p class="value" id="raid-stat-today">-</p></div>
+      <div class="metric-card"><p class="label">This Week</p><p class="value" id="raid-stat-week">-</p></div>
+      <div class="metric-card"><p class="label">All Time</p><p class="value" id="raid-stat-all">-</p></div>
+      <div class="metric-card shiny"><p class="label">Shinies Today</p><p class="value" id="raid-stat-shiny">-</p></div>
+      <div class="metric-card iv100"><p class="label">100% IV Today</p><p class="value" id="raid-stat-iv100">-</p></div>
+    </div>
+    <div class="card" style="margin-bottom: 20px;">
+      <h3 id="raid-bar-chart-title">Most Common Raid Bosses (30 Days)</h3>
+      <div class="chart-wrap"><canvas id="raidBarChart"></canvas></div>
+    </div>
+    <div class="history-list" id="raid-history-list"></div>
+    <button class="load-more" id="raid-history-load-more" onclick="loadMoreRaidHistory()">Load More</button>
+  </div>
+
+  <div class="tab-content" id="tab-settings">
+    <div class="card settings-card">
+      <h3>Privacy</h3>
+      <label class="history-raid-toggle">
+        <input type="checkbox" id="setting-hide-trainer" onchange="onHideTrainerChange()">
+        Hide trainer name in History and Raids
+      </label>
+      <p class="settings-hint">When enabled, trainer names are hidden from all entries in the interface (and left blank in CSV exports). This only affects what's displayed - the name is still stored in the database.</p>
+    </div>
+
+    <div class="card settings-card">
+      <h3>Notifications</h3>
+      <p class="settings-hint" style="margin: 0 0 10px;">Off by default. Your browser will ask for permission the first time you turn one of these on.</p>
+      <label class="history-raid-toggle">
+        <input type="checkbox" id="setting-notify-shiny" onchange="onNotifySettingChange()">
+        Notify me for shiny catches
+      </label>
+      <label class="history-raid-toggle" style="margin-top: 8px;">
+        <input type="checkbox" id="setting-notify-iv100" onchange="onNotifySettingChange()">
+        Notify me for 100% IV catches
+      </label>
+      <label class="history-raid-toggle" style="margin-top: 8px;">
+        <input type="checkbox" id="setting-notify-shiny-iv100" onchange="onNotifySettingChange()">
+        Notify me for shiny + 100% IV catches
+      </label>
+      <p class="settings-hint" id="notification-status"></p>
+    </div>
+
+    <div class="card settings-card">
+      <h3>Dashboard</h3>
+      <label for="setting-chart-days" class="top-species">Chart time range:</label>
+      <select id="setting-chart-days" onchange="onChartDaysChange()">
+        <option value="7">Last 7 Days</option>
+        <option value="30" selected>Last 30 Days</option>
+        <option value="90">Last 90 Days</option>
+      </select>
+    </div>
+
+    <div class="card settings-card">
+      <h3>Data</h3>
+      <a id="export-csv-link" class="history-map" href="/api/export/csv" download>Download CSV Export</a>
+      <p class="settings-hint">Exports every catch, flee, and raid entry as a CSV file.</p>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-about">
+    <div class="card settings-card">
+      <h3>About PoGo Stats</h3>
+      <p class="settings-hint">A personal Discord bot + dashboard for tracking Pokemon Go catch and raid stats from PolygonX webhook messages. Built for personal, non-commercial use.</p>
+    </div>
+    <div class="card settings-card">
+      <h3>Credits</h3>
+      <ul class="about-list">
+        <li><a href="https://fastapi.tiangolo.com/" target="_blank" rel="noopener">FastAPI</a> - the backend web framework</li>
+        <li><a href="https://www.uvicorn.org/" target="_blank" rel="noopener">Uvicorn</a> - the ASGI server FastAPI runs on</li>
+        <li><a href="https://discordpy.readthedocs.io/" target="_blank" rel="noopener">discord.py</a> - the Discord bot library</li>
+        <li><a href="https://www.python-httpx.org/" target="_blank" rel="noopener">httpx</a> - used to fetch and cache Pokemon sprites</li>
+        <li><a href="https://github.com/theskumar/python-dotenv" target="_blank" rel="noopener">python-dotenv</a> - loads the bot token from .env</li>
+        <li><a href="https://www.chartjs.org/" target="_blank" rel="noopener">Chart.js</a> - the dashboard and raid charts</li>
+        <li><a href="https://leafletjs.com/" target="_blank" rel="noopener">Leaflet.js</a> - the interactive maps</li>
+        <li><a href="https://github.com/Leaflet/Leaflet.heat" target="_blank" rel="noopener">Leaflet.heat</a> - the catch density heatmap</li>
+        <li><a href="https://carto.com/basemaps" target="_blank" rel="noopener">CARTO</a> - the free dark map tiles</li>
+        <li><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> - the underlying map data</li>
+        <li><a href="https://github.com/PokeAPI/sprites" target="_blank" rel="noopener">PokeAPI/sprites</a> - the Pokemon sprite images</li>
+        <li>PolygonX - the Discord webhook source this tool reads catch/raid data from</li>
+      </ul>
+    </div>
+    <div class="card settings-card">
+      <h3>Trademark disclaimer</h3>
+      <p class="settings-hint">Pokemon and Pokemon Go are trademarks of Nintendo, Game Freak, and The Pokemon Company. This is an unofficial, non-commercial fan tool and is not affiliated with or endorsed by any of them.</p>
+    </div>
+  </div>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>
