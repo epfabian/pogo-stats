@@ -352,15 +352,22 @@ def get_raid_top_species(days=30, limit=10, db_path=DB_PATH, tz=DEFAULT_TZ):
         return output
 
 
-def get_raid_history(limit=50, offset=0, db_path=DB_PATH):
+def get_raid_history(limit=50, offset=0, shiny_only=False, iv100_only=False, db_path=DB_PATH):
     with get_conn(db_path) as conn:
+        where = "1=1"
+        if shiny_only:
+            where += " AND shiny = 1"
+        if iv100_only:
+            where += " AND iv100 = 1"
+
         query = (
             "SELECT id, ts, trainer, pokemon_id, pokemon_name, shiny, iv100, lat, lon, "
             "iv_atk, iv_def, iv_sta, cp, level "
-            "FROM raids ORDER BY ts DESC LIMIT ? OFFSET ?"
+            "FROM raids WHERE " + where + " "
+            "ORDER BY ts DESC LIMIT ? OFFSET ?"
         )
         rows = conn.execute(query, (limit, offset)).fetchall()
-        total = _count_raids(conn, "1=1")
+        total = _count_raids(conn, where)
 
         entries = []
         for row in rows:
@@ -408,6 +415,35 @@ def get_summary(db_path=DB_PATH, tz=DEFAULT_TZ):
         summary["shiny_today"] = _count(conn, "event_type='catch' AND shiny=1 AND ts >= ?", (today_bound,))
         summary["iv100_today"] = _count(conn, "event_type='catch' AND iv100=1 AND ts >= ?", (today_bound,))
         summary["flee_today"] = _count(conn, "event_type='flee' AND ts >= ?", (today_bound,))
+        return summary
+
+
+def get_rolling_summary(hours=24, db_path=DB_PATH):
+    """Encounters and raids in the last `hours`, as a rolling window ending
+    right now - e.g. "last 24h" from this exact moment, NOT tied to any
+    calendar day boundary or timezone (unlike get_summary's "today"). This
+    matches how Pokemon Go's own rolling encounter limit works - it counts
+    every encounter (catches, raid catches, and fled Pokemon alike) and
+    rolls continuously rather than resetting at local midnight.
+
+    "encounters" is therefore catches + flees + raid catches combined - the
+    number that actually counts against the limit. "raids" is a separate
+    breakout of just the raid portion, for visibility into how much of that
+    total came from raids specifically (it's already included in
+    "encounters", not additional to it).
+
+    Since ts is stored as naive UTC and this is a pure rolling window (not a
+    local calendar date), no timezone conversion is needed here at all -
+    just compare against UTC now."""
+    cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat(timespec="seconds")
+    with get_conn(db_path) as conn:
+        summary = {}
+        summary["hours"] = hours
+        raids = _count_raids(conn, "ts >= ?", (cutoff,))
+        catches = _count(conn, "event_type='catch' AND ts >= ?", (cutoff,))
+        flees = _count(conn, "event_type='flee' AND ts >= ?", (cutoff,))
+        summary["encounters"] = catches + flees + raids
+        summary["raids"] = raids
         return summary
 
 
@@ -495,40 +531,27 @@ def get_day_stats(day, db_path=DB_PATH, tz=DEFAULT_TZ):
         return result
 
 
-def get_history(limit=50, offset=0, event_type=None, include_raids=False, db_path=DB_PATH):
+def get_history(limit=50, offset=0, event_type=None, shiny_only=False, iv100_only=False, db_path=DB_PATH):
     with get_conn(db_path) as conn:
         where = "1=1"
         params = []
         if event_type in ("catch", "flee"):
-            where = "event_type = ?"
+            where += " AND event_type = ?"
             params.append(event_type)
+        if shiny_only:
+            where += " AND shiny = 1"
+        if iv100_only:
+            where += " AND iv100 = 1"
 
-        catch_cols = (
-            "id, ts, event_type, trainer, pokemon_id, pokemon_name, shiny, iv100, lat, lon, "
-            "iv_atk, iv_def, iv_sta, cp, level"
+        query = (
+            "SELECT id, ts, event_type, trainer, pokemon_id, pokemon_name, shiny, iv100, lat, lon, "
+            "iv_atk, iv_def, iv_sta, cp, level "
+            "FROM catches WHERE " + where + " "
+            "ORDER BY ts DESC LIMIT ? OFFSET ?"
         )
-        raid_cols = (
-            "id, ts, 'raid' AS event_type, trainer, pokemon_id, pokemon_name, shiny, iv100, lat, lon, "
-            "iv_atk, iv_def, iv_sta, cp, level"
-        )
-
-        if include_raids:
-            query = (
-                "SELECT " + catch_cols + " FROM catches WHERE " + where +
-                " UNION ALL SELECT " + raid_cols + " FROM raids "
-                "ORDER BY ts DESC LIMIT ? OFFSET ?"
-            )
-            query_params = list(params) + [limit, offset]
-            rows = conn.execute(query, query_params).fetchall()
-            total = _count(conn, where, tuple(params)) + _count_raids(conn, "1=1")
-        else:
-            query = (
-                "SELECT " + catch_cols + " FROM catches WHERE " + where + " "
-                "ORDER BY ts DESC LIMIT ? OFFSET ?"
-            )
-            query_params = list(params) + [limit, offset]
-            rows = conn.execute(query, query_params).fetchall()
-            total = _count(conn, where, tuple(params))
+        query_params = list(params) + [limit, offset]
+        rows = conn.execute(query, query_params).fetchall()
+        total = _count(conn, where, tuple(params))
 
         entries = []
         for row in rows:

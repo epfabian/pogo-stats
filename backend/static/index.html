@@ -19,6 +19,7 @@
       <button class="tab-btn" id="btn-calendar" onclick="showTab('calendar')">Calendar</button>
       <button class="tab-btn" id="btn-history" onclick="showTab('history')">History</button>
       <button class="tab-btn" id="btn-raids" onclick="showTab('raids')">Raids</button>
+      <button class="tab-btn" id="btn-rolling" onclick="showTab('rolling')">Rolling 24h</button>
     </div>
     <div class="tabs-secondary">
       <button class="tab-btn" id="btn-settings" onclick="showTab('settings')">Settings</button>
@@ -39,6 +40,7 @@
           <p class="map-empty" id="map-empty">No location data yet.</p>
         </div>
         <p class="map-caption" id="last-location-caption"></p>
+        <p class="map-caption" id="last-location-time"></p>
       </div>
     </div>
     <div class="metrics">
@@ -80,17 +82,29 @@
   </div>
 
   <div class="tab-content" id="tab-history">
+    <div class="history-subtabs">
+      <button class="subtab-btn active" id="history-subtab-catches" onclick="setHistorySubTab('catches')">Catches</button>
+      <button class="subtab-btn" id="history-subtab-raids" onclick="setHistorySubTab('raids')">Raids</button>
+    </div>
     <div class="history-toolbar">
-      <label for="history-filter" class="top-species">Filter:</label>
+      <label for="history-filter" class="top-species" id="history-filter-label">Filter:</label>
       <select id="history-filter" onchange="onHistoryFilterChange()">
         <option value="all">All</option>
         <option value="catch">Catches Only</option>
         <option value="flee">Flees Only</option>
       </select>
       <label class="history-raid-toggle">
-        <input type="checkbox" id="history-include-raids" onchange="onHistoryFilterChange()">
-        Show raid catches
+        <input type="checkbox" id="history-shiny-only" onchange="onHistoryFilterChange()">
+        Shiny only
       </label>
+      <label class="history-raid-toggle">
+        <input type="checkbox" id="history-iv100-only" onchange="onHistoryFilterChange()">
+        100% IV only
+      </label>
+      <div class="display-toggle">
+        <button class="display-btn active" id="history-display-list" onclick="setHistoryDisplayMode('list')" title="List view">List</button>
+        <button class="display-btn" id="history-display-grid" onclick="setHistoryDisplayMode('grid')" title="Grid view">Grid</button>
+      </div>
     </div>
     <div class="history-list" id="history-list"></div>
     <button class="load-more" id="history-load-more" onclick="loadMoreHistory()">Load More</button>
@@ -110,6 +124,14 @@
     </div>
     <div class="history-list" id="raid-history-list"></div>
     <button class="load-more" id="raid-history-load-more" onclick="loadMoreRaidHistory()">Load More</button>
+  </div>
+
+  <div class="tab-content" id="tab-rolling">
+    <div class="metrics">
+      <div class="metric-card"><p class="label">Encounters (24h)</p><p class="value" id="rolling-stat-encounters">-</p></div>
+      <div class="metric-card"><p class="label">Raids (24h)</p><p class="value" id="rolling-stat-raids">-</p></div>
+    </div>
+    <p class="settings-hint" style="margin-top: 12px;">A rolling window - always the last 24 hours from right now, not tied to your local midnight. "Encounters" is every catch, raid catch, and fled Pokemon combined - the number that counts against Pokemon Go's rolling encounter limit. Raids are also included in that total; shown separately here just to break out how many of it were raids.</p>
   </div>
 
   <div class="tab-content" id="tab-settings">
@@ -175,20 +197,4 @@
         <li><a href="https://github.com/theskumar/python-dotenv" target="_blank" rel="noopener">python-dotenv</a> - loads the bot token from .env</li>
         <li><a href="https://www.chartjs.org/" target="_blank" rel="noopener">Chart.js</a> - the dashboard and raid charts</li>
         <li><a href="https://leafletjs.com/" target="_blank" rel="noopener">Leaflet.js</a> - the interactive maps</li>
-        <li><a href="https://github.com/Leaflet/Leaflet.heat" target="_blank" rel="noopener">Leaflet.heat</a> - the catch density heatmap</li>
-        <li><a href="https://carto.com/basemaps" target="_blank" rel="noopener">CARTO</a> - the free dark map tiles</li>
-        <li><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> - the underlying map data</li>
-        <li><a href="https://github.com/PokeAPI/sprites" target="_blank" rel="noopener">PokeAPI/sprites</a> - the Pokemon sprite images</li>
-        <li>PolygonX - the Discord webhook source this tool reads catch/raid data from</li>
-      </ul>
-    </div>
-    <div class="card settings-card">
-      <h3>Trademark disclaimer</h3>
-      <p class="settings-hint">Pokemon and Pokemon Go are trademarks of Nintendo, Game Freak, and The Pokemon Company. This is an unofficial, non-commercial fan tool and is not affiliated with or endorsed by any of them.</p>
-    </div>
-  </div>
-
-</div>
-<script src="app.js"></script>
-</body>
-</html>
+        <li><a 

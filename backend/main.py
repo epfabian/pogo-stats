@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from timezonefinder import TimezoneFinder
 
 from shared import db
 
@@ -31,6 +32,11 @@ SHINY_SPRITE_URL = "https://raw.githubusercontent.com/PokeAPI/sprites/master/spr
 
 app = FastAPI(title="PoGo Stats API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# Built once at import time (loads its offline shapefile-derived lookup data
+# into memory) and reused for every request - constructing it per-request
+# would be needlessly slow. No network calls, no API key.
+_tzfinder = TimezoneFinder()
 
 
 @app.on_event("startup")
@@ -48,6 +54,11 @@ def startup():
 @app.get("/api/summary")
 def summary(tz: str = "UTC"):
     return db.get_summary(tz=tz)
+
+
+@app.get("/api/rolling/summary")
+def rolling_summary(hours: int = 24):
+    return db.get_rolling_summary(hours=hours)
 
 
 @app.get("/api/timeseries")
@@ -76,7 +87,17 @@ def calendar_month(year: int, month: int, tz: str = "UTC"):
 
 @app.get("/api/last-location")
 def last_location():
-    return db.get_last_location() or {}
+    loc = db.get_last_location()
+    if loc is None:
+        return {}
+    if loc.get("lat") is not None and loc.get("lon") is not None:
+        # Resolves the coordinates to an IANA timezone (e.g. "Europe/Berlin")
+        # so the frontend can show what time it currently is *there* -
+        # separate from and in addition to the user's own clock/timezone.
+        loc["timezone"] = _tzfinder.timezone_at(lat=loc["lat"], lng=loc["lon"])
+    else:
+        loc["timezone"] = None
+    return loc
 
 
 @app.get("/api/locations")
@@ -107,9 +128,9 @@ def export_csv(hide_trainer: bool = False):
 
 
 @app.get("/api/history")
-def history(limit: int = 50, offset: int = 0, type: str = "all", include_raids: bool = False):
+def history(limit: int = 50, offset: int = 0, type: str = "all", shiny: bool = False, iv100: bool = False):
     event_type = type if type in ("catch", "flee") else None
-    return db.get_history(limit=limit, offset=offset, event_type=event_type, include_raids=include_raids)
+    return db.get_history(limit=limit, offset=offset, event_type=event_type, shiny_only=shiny, iv100_only=iv100)
 
 
 @app.get("/api/raids/summary")
@@ -123,8 +144,8 @@ def raids_top_species(days: int = 30, limit: int = 10, tz: str = "UTC"):
 
 
 @app.get("/api/raids/history")
-def raids_history(limit: int = 50, offset: int = 0):
-    return db.get_raid_history(limit=limit, offset=offset)
+def raids_history(limit: int = 50, offset: int = 0, shiny: bool = False, iv100: bool = False):
+    return db.get_raid_history(limit=limit, offset=offset, shiny_only=shiny, iv100_only=iv100)
 
 
 async def _get_or_cache_sprite(pokemon_id: int, shiny: bool) -> Path:

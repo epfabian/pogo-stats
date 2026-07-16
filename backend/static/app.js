@@ -22,6 +22,7 @@ function updateClock() {
   document.getElementById("clock-date").textContent = now.toLocaleDateString("en-US", {
     weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: userTimezone,
   });
+  updateLocationTime();
 }
 
 let lastLocationMap = null;
@@ -29,6 +30,31 @@ let lastLocationMarker = null;
 // Tracks the coordinates currently shown, so a refresh with the same last
 // catch doesn't yank the view back to it if the user has panned/zoomed away.
 let lastLocationShown = null;
+// The IANA timezone of the last catch's coordinates (resolved server-side
+// via timezonefinder), so updateClock() can also show what time it
+// currently is *there* - separate from and in addition to the user's own
+// clock/timezone in Settings. Null when there's no location data yet, or
+// the coordinates couldn't be resolved to a timezone.
+let lastLocationTimezone = null;
+
+function updateLocationTime() {
+  const el = document.getElementById("last-location-time");
+  if (!el) return;
+  if (!lastLocationTimezone) {
+    el.textContent = "";
+    return;
+  }
+  try {
+    const timeStr = new Date().toLocaleTimeString("en-US", {
+      hour: "2-digit", minute: "2-digit", hour12: false, timeZone: lastLocationTimezone,
+    });
+    el.textContent = "Local time there: " + timeStr + " (" + lastLocationTimezone.replace(/_/g, " ") + ")";
+  } catch (e) {
+    // Shouldn't happen (the backend only ever sends valid IANA names or
+    // null), but never let a bad timezone string break the clock.
+    el.textContent = "";
+  }
+}
 
 function lastLocationPinIcon() {
   return L.divIcon({
@@ -50,11 +76,16 @@ async function loadLastLocation() {
     mapEl.style.display = "none";
     empty.style.display = "flex";
     caption.textContent = "";
+    lastLocationTimezone = null;
+    updateLocationTime();
     return;
   }
 
   mapEl.style.display = "block";
   empty.style.display = "none";
+
+  lastLocationTimezone = data.timezone || null;
+  updateLocationTime();
 
   const locationChanged = !lastLocationShown ||
     lastLocationShown.lat !== data.lat || lastLocationShown.lon !== data.lon;
@@ -180,8 +211,21 @@ let lastNotifiedTs = localStorage.getItem("pogostats_last_notified_ts") || null;
 let historyOffset = 0;
 const historyLimit = 50;
 let historyFilter = "all";
-let historyIncludeRaids = false;
 let historyTotal = 0;
+// "catches" | "raids" - a sub-tab *within* History, separate from the
+// top-level Raids tab (which has its own summary/chart/history). Lets you
+// browse raid catches in the same filterable/paginated list as regular
+// catches, without mixing the two together.
+let historySubTab = "catches";
+let historyShinyOnly = false;
+let historyIv100Only = false;
+// Persisted since it's a display preference, not a filter (matches
+// chartDays/userTimezone/hideTrainerName - things you set once and expect
+// to stick, vs. filters that reasonably reset per session).
+let historyDisplayMode = localStorage.getItem("pogostats_history_display") || "list";
+// Every entry loaded so far across "Load More" pages, kept around so
+// switching List/Grid re-renders instantly without refetching.
+let lastHistoryEntries = [];
 
 function showTab(tab) {
   currentTab = tab;
@@ -213,6 +257,8 @@ function refreshTab(tab) {
     loadRaidSummary();
     loadRaidTopSpecies();
     loadRaidHistoryPage(true);
+  } else if (tab === "rolling") {
+    loadRollingSummary();
   } else if (tab === "settings") {
     document.getElementById("setting-hide-trainer").checked = hideTrainerName;
     document.getElementById("setting-chart-days").value = String(chartDays);
@@ -357,15 +403,30 @@ async function onNotifySettingChange() {
   await initNotificationBaseline();
 }
 
+// /api/history and /api/raids/history are separate endpoints now (used to
+// be combinable via an include_raids flag on /api/history) - notifications
+// care about both catches and raid catches, so fetch each and merge/sort
+// client-side rather than picking just one source.
+async function fetchRecentEntries(limit) {
+  const [catchesRes, raidsRes] = await Promise.all([
+    fetch("/api/history?limit=" + limit),
+    fetch("/api/raids/history?limit=" + limit),
+  ]);
+  const catchesData = await catchesRes.json();
+  const raidsData = await raidsRes.json();
+  const merged = catchesData.entries.concat(raidsData.entries);
+  merged.sort((a, b) => (a.ts > b.ts ? -1 : 1));
+  return merged.slice(0, limit);
+}
+
 async function initNotificationBaseline() {
   // The first time notifications are turned on, don't retroactively notify
   // for existing history - just record the newest entry as the starting
   // point and only notify for anything newer than that from now on.
   if (lastNotifiedTs) return;
   try {
-    const res = await fetch("/api/history?limit=1&include_raids=true");
-    const data = await res.json();
-    lastNotifiedTs = data.entries.length ? data.entries[0].ts : "1970-01-01T00:00:00";
+    const entries = await fetchRecentEntries(1);
+    lastNotifiedTs = entries.length ? entries[0].ts : "1970-01-01T00:00:00";
   } catch (e) {
     lastNotifiedTs = "1970-01-01T00:00:00";
   }
@@ -394,9 +455,8 @@ async function checkForNewCatchNotifications() {
     return;
   }
 
-  const res = await fetch("/api/history?limit=20&include_raids=true");
-  const data = await res.json();
-  const newEntries = data.entries
+  const entries = await fetchRecentEntries(20);
+  const newEntries = entries
     .filter((e) => e.ts > lastNotifiedTs)
     .sort((a, b) => (a.ts > b.ts ? 1 : -1));
 
@@ -433,6 +493,13 @@ let lastTimeseriesData = null;
 let lastTopSpeciesData = null;
 let lastRaidTopSpeciesData = null;
 
+async function loadRollingSummary() {
+  const res = await fetch("/api/rolling/summary?hours=24");
+  const data = await res.json();
+  document.getElementById("rolling-stat-encounters").textContent = data.encounters;
+  document.getElementById("rolling-stat-raids").textContent = data.raids;
+}
+
 async function loadTimeseries() {
   const res = await fetch("/api/timeseries?days=" + chartDays + "&tz=" + encodeURIComponent(userTimezone));
   const data = await res.json();
@@ -463,11 +530,26 @@ async function loadTimeseries() {
         fill: true,
         tension: 0.3,
         pointRadius: 0,
+        pointHoverRadius: 5,
+        pointHoverBackgroundColor: "#1D9E75",
+        pointHoverBorderColor: "#0d1117",
+        pointHoverBorderWidth: 2,
         borderWidth: 2
       }]
     },
     options: {
-      plugins: { legend: { display: false } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => ctx.parsed.y + (ctx.parsed.y === 1 ? " catch" : " catches"),
+          },
+        },
+      },
+      // mode "index" + intersect: false means the tooltip triggers anywhere
+      // along a given x position, not just when the cursor is exactly on top
+      // of a point - needed since pointRadius is 0 (no visible dot to hit).
+      interaction: { mode: "index", intersect: false },
       scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
     }
   });
@@ -667,24 +749,84 @@ function renderHistoryEntry(entry) {
   );
 }
 
+// Compact card version of the same entry, for Grid view - fewer details
+// (no trainer/IV breakdown line) so more entries fit on screen at once.
+function renderHistoryCard(entry) {
+  let cardClass = "history-card catch";
+  if (entry.event_type === "flee") cardClass = "history-card flee";
+  else if (entry.event_type === undefined || entry.event_type === "raid") cardClass = "history-card raid";
+
+  let badges = "";
+  if (entry.event_type === "flee") {
+    badges += '<span class="badge flee">Fled</span>';
+  }
+  if (entry.shiny && entry.iv100) {
+    badges += '<span class="badge perfect-shiny">Shundo</span>';
+  } else {
+    if (entry.shiny) {
+      badges += '<span class="badge shiny">Shiny</span>';
+    }
+    if (entry.iv100) {
+      badges += '<span class="badge iv100">100%</span>';
+    }
+  }
+
+  const icon = spriteUrl(entry.pokemon_id, entry.shiny);
+
+  // Always render something in the map slot (a real link, or a disabled
+  // placeholder) rather than omitting it entirely - keeps every card the
+  // same height regardless of whether that particular entry has GPS data
+  // (flees, for instance, never do).
+  let mapLink = '<span class="history-map disabled">No GPS</span>';
+  if (entry.lat != null && entry.lon != null) {
+    const url = "https://www.google.com/maps?q=" + entry.lat + "," + entry.lon;
+    mapLink = '<a class="history-map" href="' + url + '" target="_blank" rel="noopener">Map</a>';
+  }
+
+  return (
+    '<div class="' + cardClass + '">' +
+    '<img class="history-icon" src="' + icon + '" onerror="this.style.visibility=\'hidden\'" alt="">' +
+    '<p class="history-name">' + entry.pokemon_name + "</p>" +
+    '<p class="history-meta">' + formatHistoryTimestamp(entry.ts) + "</p>" +
+    '<div class="history-badges">' + badges + "</div>" +
+    mapLink +
+    "</div>"
+  );
+}
+
+function renderHistoryList(entries) {
+  const list = document.getElementById("history-list");
+  if (entries.length === 0) {
+    list.innerHTML = '<p class="top-species">No entries yet.</p>';
+    return;
+  }
+  const renderFn = historyDisplayMode === "grid" ? renderHistoryCard : renderHistoryEntry;
+  list.innerHTML = entries.map(renderFn).join("");
+}
+
 async function loadHistoryPage(reset) {
   if (reset) {
     historyOffset = 0;
-    document.getElementById("history-list").innerHTML = "";
+    lastHistoryEntries = [];
   }
 
-  const typeParam = historyFilter === "all" ? "" : "&type=" + historyFilter;
-  const raidsParam = historyIncludeRaids ? "&include_raids=true" : "";
-  const res = await fetch("/api/history?limit=" + historyLimit + "&offset=" + historyOffset + typeParam + raidsParam);
+  const shinyParam = historyShinyOnly ? "&shiny=true" : "";
+  const iv100Param = historyIv100Only ? "&iv100=true" : "";
+
+  let url;
+  if (historySubTab === "raids") {
+    // Raids have no "flee" concept, so no type filter here.
+    url = "/api/raids/history?limit=" + historyLimit + "&offset=" + historyOffset + shinyParam + iv100Param;
+  } else {
+    const typeParam = historyFilter === "all" ? "" : "&type=" + historyFilter;
+    url = "/api/history?limit=" + historyLimit + "&offset=" + historyOffset + typeParam + shinyParam + iv100Param;
+  }
+
+  const res = await fetch(url);
   const data = await res.json();
   historyTotal = data.total;
-
-  const list = document.getElementById("history-list");
-  if (reset && data.entries.length === 0) {
-    list.innerHTML = '<p class="top-species">No entries yet.</p>';
-  } else {
-    list.insertAdjacentHTML("beforeend", data.entries.map(renderHistoryEntry).join(""));
-  }
+  lastHistoryEntries = lastHistoryEntries.concat(data.entries);
+  renderHistoryList(lastHistoryEntries);
 
   historyOffset += data.entries.length;
 
@@ -699,8 +841,37 @@ function loadMoreHistory() {
 
 function onHistoryFilterChange() {
   historyFilter = document.getElementById("history-filter").value;
-  historyIncludeRaids = document.getElementById("history-include-raids").checked;
+  historyShinyOnly = document.getElementById("history-shiny-only").checked;
+  historyIv100Only = document.getElementById("history-iv100-only").checked;
   loadHistoryPage(true);
+}
+
+function setHistorySubTab(tab) {
+  historySubTab = tab;
+  document.getElementById("history-subtab-catches").classList.toggle("active", tab === "catches");
+  document.getElementById("history-subtab-raids").classList.toggle("active", tab === "raids");
+  // The Catches/Flees type filter only makes sense for the Catches sub-tab.
+  // Use visibility (not display) so the element still reserves its layout
+  // space when hidden - otherwise the toolbar reflows and the display-mode
+  // toggle visibly shifts left/right when switching sub-tabs.
+  const showTypeFilter = tab === "catches";
+  const filterLabel = document.getElementById("history-filter-label");
+  const filterSelect = document.getElementById("history-filter");
+  filterLabel.style.visibility = showTypeFilter ? "" : "hidden";
+  filterSelect.style.visibility = showTypeFilter ? "" : "hidden";
+  filterSelect.style.pointerEvents = showTypeFilter ? "" : "none";
+  filterSelect.tabIndex = showTypeFilter ? 0 : -1;
+  loadHistoryPage(true);
+}
+
+function setHistoryDisplayMode(mode) {
+  historyDisplayMode = mode;
+  localStorage.setItem("pogostats_history_display", mode);
+  document.getElementById("history-display-list").classList.toggle("active", mode === "list");
+  document.getElementById("history-display-grid").classList.toggle("active", mode === "grid");
+  document.getElementById("history-list").classList.toggle("grid-mode", mode === "grid");
+  // Re-render what's already loaded in the new layout - no need to refetch.
+  renderHistoryList(lastHistoryEntries);
 }
 
 let raidBarChart;
@@ -788,6 +959,10 @@ document.addEventListener("DOMContentLoaded", () => {
   updateChartTitles();
   updateExportLink();
 
+  document.getElementById("history-display-list").classList.toggle("active", historyDisplayMode === "list");
+  document.getElementById("history-display-grid").classList.toggle("active", historyDisplayMode === "grid");
+  document.getElementById("history-list").classList.toggle("grid-mode", historyDisplayMode === "grid");
+
   updateClock();
   setInterval(updateClock, 1000);
   loadLastLocation();
@@ -802,6 +977,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadRaidSummary();
   loadRaidTopSpecies();
   loadRaidHistoryPage(true);
+  loadRollingSummary();
 
   // Periodically refresh whichever tab is currently visible, so new
   // catches/raids show up automatically without a manual page reload.

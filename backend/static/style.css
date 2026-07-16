@@ -19,6 +19,14 @@
   --perfect-bg: linear-gradient(135deg, rgba(178, 148, 245, 0.28), rgba(74, 222, 149, 0.28));
 }
 
+html {
+  /* Reserves the scrollbar's width even when the page is short enough not
+     to need one, so switching between tabs/sub-tabs with different content
+     lengths (e.g. History's Catches vs Raids) never causes the whole page
+     to shift left/right as the scrollbar appears or disappears. */
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
 * { box-sizing: border-box; }
 body {
   margin: 0;
@@ -267,12 +275,48 @@ body {
 .top-species-list img { width: 22px; height: 22px; object-fit: contain; }
 
 /* History */
+.history-subtabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.subtab-btn {
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+.subtab-btn:hover { border-color: var(--border-hover); color: var(--text); }
+.subtab-btn.active { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); font-weight: 500; }
+
 .history-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 16px;
 }
+.display-toggle {
+  display: flex;
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.display-btn {
+  padding: 6px 12px;
+  border: none;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.display-btn + .display-btn { border-left: 1px solid var(--border); }
+.display-btn:hover { color: var(--text); }
+.display-btn.active { background: var(--accent-bg); color: var(--accent); }
 .history-toolbar select {
   background: var(--surface-2);
   color: var(--text);
@@ -364,6 +408,35 @@ body {
 }
 .history-map:hover { text-decoration: underline; }
 .history-map.disabled { color: var(--text-muted); pointer-events: none; }
+
+.history-list.grid-mode {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+}
+.history-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 8px;
+}
+.history-card.flee { border-left: 3px solid var(--flee); }
+.history-card.catch { border-left: 3px solid var(--iv100); }
+.history-card.raid { border-left: 3px solid var(--accent); }
+.history-card .history-icon { width: 40px; height: 40px; margin-bottom: 2px; }
+.history-card .history-name { font-size: 12px; font-weight: 500; color: var(--text); margin: 0; }
+.history-card .history-meta { font-size: 10px; color: var(--text-muted); margin: 0; }
+/* Fixed min-height so a card with no badges (e.g. a plain catch) takes up
+   the same space as one with a "Shiny"/"100%"/"Shundo" pill - otherwise
+   rows containing a mix of badged and un-badged entries end up visibly
+   uneven since a CSS grid row is only as tall as its tallest cell. */
+.history-card .history-badges { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; min-height: 18px; }
+.history-card .history-map { font-size: 10px; min-height: 12px; }
 
 .load-more {
   width: 100%;
