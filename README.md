@@ -22,6 +22,8 @@ pogo-stats/
   bot/bot.py        Discord bot, listens on the webhook channel
   backend/main.py   FastAPI: stats endpoints + sprite cache + frontend
   backend/static/   Dashboard (vanilla JS, Chart.js, Leaflet)
+  launcher.py       Status window + system tray icon that starts/stops
+                     the Bot and Backend (started for you by start.vbs)
   scripts/          One-off maintenance scripts
   data/             SQLite DB + cached sprites (created on first run)
 ```
@@ -67,7 +69,23 @@ CHANNEL_ID=<channel id>
 
 ### 4. Start it
 
-Two processes, each run from the `pogo-stats` folder with the venv
+On Windows, just double-click `start.vbs` - that's the only file you need
+to run. It launches a small status window (`launcher.py`) that starts and
+manages both the Bot and the Backend for you: a green/red dot next to "Bot"
+and "Backend" shows whether each is currently running, plus buttons to open
+the dashboard, restart both, or quit. Closing the window (the X button)
+minimizes it to the system tray instead of quitting - double-click the tray
+icon to bring it back, or right-click it for "Show"/"Quit". There's no
+separate stop script: use the window's or tray icon's "Quit" button
+instead, which shuts both processes down cleanly. (`start.vbs` rather than
+a `.bat` file specifically so double-clicking it doesn't flash a console
+window even for a moment.)
+
+The dashboard is then reachable at `http://<server-ip>:8000`.
+
+**Manual start (without the launcher)** - e.g. on Linux/macOS, or on a
+headless server without a GUI: run the Bot and Backend as two separate
+processes yourself, each from the `pogo-stats` folder with the venv
 activated:
 
 ```
@@ -78,23 +96,30 @@ python -m bot.bot
 uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
-The dashboard is then reachable at `http://<server-ip>:8000`.
-
-On Windows you can also just run `start.bat`, which starts both processes
-and opens the dashboard in your browser automatically. Use `stop.bat` to
-stop them again.
+`launcher.py` itself (`pystray`/`Tkinter`) requires a graphical Windows
+environment, so this manual route is also the one to use if you ever want
+to run PoGo Stats on non-Windows hardware.
 
 ## Features
 
-- **Dashboard** - live clock, last-catch map, today/week/all-time metrics,
-  catches-over-time and top-species charts, and a catch density heatmap
-  (aggregate only - no individual catch locations are plotted besides the
-  single most recent one).
+- **Dashboard** - live clock, last-catch map (with the local time *at* that
+  location shown alongside your own clock, resolved from its coordinates),
+  today/week/all-time metrics, a catches-over-time chart with hover
+  tooltips, a top-species chart, and a catch density heatmap (aggregate
+  only - no individual catch locations are plotted besides the single most
+  recent one).
+- **Rolling 24h** - encounters (catches + flees + raid catches combined) and
+  raids in a rolling 24-hour window ending right now, matching how Pokemon
+  Go's own encounter limit actually works - unlike "Today", it's not tied to
+  local midnight.
 - **Calendar** - month view with a per-day breakdown of both catches and
   raids.
-- **History** / **Raids** - paginated, filterable lists of every recorded
-  event, each showing IV/CP/level and a shiny / 100% IV / shiny+100% IV tag
-  where applicable.
+- **History** - paginated, filterable list of every recorded catch/flee,
+  with a Catches/Raids sub-tab to browse raid catches the same way. Filter
+  by Shiny only, 100% IV only, or both together (for shundos), and switch
+  between a detailed List view or a more compact Grid view.
+- **Raids** - a separate top-level tab with its own summary, top-boss chart,
+  and paginated history.
 - **Settings** - hide your trainer name from the interface and CSV export,
   opt in to browser notifications for shiny / 100% IV / shiny+100% IV
   catches (off by default), and set how many days back the dashboard/raid
@@ -151,6 +176,9 @@ sources (same list shown in the in-app About tab):
 - [discord.py](https://discordpy.readthedocs.io/) - the Discord bot library
 - [httpx](https://www.python-httpx.org/) - used to fetch and cache Pokemon sprites
 - [python-dotenv](https://github.com/theskumar/python-dotenv) - loads the bot token from `.env`
+- [timezonefinder](https://github.com/jannikmi/timezonefinder) - resolves the last catch's coordinates to a timezone, for the "local time there" indicator (offline, no API key needed)
+- [pystray](https://github.com/moses-palmer/pystray) - the system tray icon for `launcher.py`
+- [Pillow](https://python-pillow.org/) - draws the tray icon image
 - [Chart.js](https://www.chartjs.org/) - the dashboard and raid charts
 - [Leaflet.js](https://leafletjs.com/) - the interactive maps
 - [Leaflet.heat](https://github.com/Leaflet/Leaflet.heat) - the catch density heatmap
