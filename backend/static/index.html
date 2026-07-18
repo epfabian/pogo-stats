@@ -32,6 +32,7 @@
       <div class="clock-card">
         <p class="clock-time" id="clock-time">--:--</p>
         <p class="clock-date" id="clock-date">-</p>
+        <p class="clock-sync" id="last-synced">-</p>
       </div>
       <div class="map-card">
         <h3>Last Catch Location</h3>
@@ -61,7 +62,7 @@
       </div>
     </div>
     <div class="card" style="margin-top: 16px;">
-      <h3>Catch Density Heatmap</h3>
+      <h3 id="heatmap-title">Catch Density Heatmap (Last 30 Days)</h3>
       <div class="map-wrap heatmap-wrap">
         <div id="heatmap"></div>
         <p class="map-empty" id="heatmap-empty">No location data yet.</p>
@@ -170,6 +171,14 @@
         <option value="30" selected>Last 30 Days</option>
         <option value="90">Last 90 Days</option>
       </select>
+      <label for="setting-heatmap-days" class="top-species" style="margin-top: 12px; display: block;">Heatmap time range:</label>
+      <select id="setting-heatmap-days" onchange="onHeatmapDaysChange()">
+        <option value="30" selected>Last 30 Days</option>
+        <option value="90">Last 90 Days</option>
+        <option value="365">Last Year</option>
+        <option value="all">All Time</option>
+      </select>
+      <p class="settings-hint" style="margin-top: 4px;">Controls how far back the Catch Density Heatmap looks. Kept separate from the chart range above since the heatmap accumulates density over time and can turn into an undifferentiated blob if it spans too long a period.</p>
       <label for="setting-timezone" class="top-species" style="margin-top: 12px; display: block;">Timezone:</label>
       <select id="setting-timezone" onchange="onTimezoneChange()"></select>
       <p class="settings-hint">Controls what counts as "today" and how the calendar/charts group catches by day. Defaults to your browser's timezone.</p>
@@ -195,6 +204,9 @@
         <li><a href="https://discordpy.readthedocs.io/" target="_blank" rel="noopener">discord.py</a> - the Discord bot library</li>
         <li><a href="https://www.python-httpx.org/" target="_blank" rel="noopener">httpx</a> - used to fetch and cache Pokemon sprites</li>
         <li><a href="https://github.com/theskumar/python-dotenv" target="_blank" rel="noopener">python-dotenv</a> - loads the bot token from .env</li>
+        <li><a href="https://github.com/jannikmi/timezonefinder" target="_blank" rel="noopener">timezonefinder</a> - resolves the last catch's coordinates to a timezone, for the "local time there" indicator (offline, no API key needed)</li>
+        <li><a href="https://github.com/moses-palmer/pystray" target="_blank" rel="noopener">pystray</a> - the system tray icon for launcher.py</li>
+        <li><a href="https://python-pillow.org/" target="_blank" rel="noopener">Pillow</a> - draws the tray icon image</li>
         <li><a href="https://www.chartjs.org/" target="_blank" rel="noopener">Chart.js</a> - the dashboard and raid charts</li>
         <li><a href="https://leafletjs.com/" target="_blank" rel="noopener">Leaflet.js</a> - the interactive maps</li>
         <li><a href="https://github.com/Leaflet/Leaflet.heat" target="_blank" rel="noopener">Leaflet.heat</a> - the catch density heatmap</li>

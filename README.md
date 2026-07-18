@@ -107,7 +107,15 @@ to run PoGo Stats on non-Windows hardware.
   today/week/all-time metrics, a catches-over-time chart with hover
   tooltips, a top-species chart, and a catch density heatmap (aggregate
   only - no individual catch locations are plotted besides the single most
-  recent one).
+  recent one). The heatmap's own time range (default: last 30 days) is
+  configurable in Settings, separately from the other charts - since it
+  accumulates density over time, showing "all time" by default would
+  eventually turn it into an undifferentiated blob around wherever you're
+  usually active rather than showing where you've recently been. A
+  "Last catch synced X minutes/hours ago" indicator also sits on the
+  clock card - unlike the tray/status window (which only shows whether the
+  Bot *process* is running), this reflects whether it's actually still
+  receiving and storing Discord events.
 - **Rolling 24h** - encounters (catches + flees + raid catches combined) and
   raids in a rolling 24-hour window ending right now, matching how Pokemon
   Go's own encounter limit actually works - unlike "Today", it's not tied to
@@ -123,7 +131,7 @@ to run PoGo Stats on non-Windows hardware.
 - **Settings** - hide your trainer name from the interface and CSV export,
   opt in to browser notifications for shiny / 100% IV / shiny+100% IV
   catches (off by default), and set how many days back the dashboard/raid
-  charts look.
+  charts and the heatmap each look.
 - **About** - credits for every third-party library and data source this
   project relies on.
 - **CSV export** - download the full catch/flee/raid history as a CSV file
@@ -151,6 +159,15 @@ changed.
 - The timestamp comes deliberately from Discord itself (`message.created_at`),
   not from the embed text, because the embed only has a time of day without
   a date.
+- A single malformed or unexpected embed is logged and skipped rather than
+  interrupting the rest of that message (or the bot as a whole) - see
+  `bot/bot.py`.
+- On startup, the bot checks the channel's message history since the last
+  event it has recorded and processes anything it missed while it wasn't
+  running (crash, restart, server reboot, deployment, etc.), so a bot
+  outage doesn't silently mean lost catches. This only runs if the database
+  already has at least one prior event to use as a starting point - on a
+  brand new install there's nothing to catch up to yet.
 
 ## Pokemon sprites
 

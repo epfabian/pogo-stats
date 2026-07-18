@@ -126,8 +126,16 @@ let heatLayer = null;
 // heat data in place without touching the user's current pan/zoom.
 let lastHeatmapData = null;
 
-async function loadHeatmap() {
-  const res = await fetch("/api/locations");
+// How many days back the heatmap looks - "all" means unbounded. Kept
+// separate from chartDays (below): without a limit here the heatmap
+// accumulates every catch ever recorded and after a few weeks/months just
+// turns into a blob around wherever you're usually active, so this
+// defaults to a much shorter window than the "All Time" it used to be.
+let heatmapDays = localStorage.getItem("pogostats_heatmap_days") || "30";
+
+async function loadHeatmap(forceRefit) {
+  const daysParam = heatmapDays === "all" ? "" : "&days=" + heatmapDays;
+  const res = await fetch("/api/locations?tz=" + encodeURIComponent(userTimezone) + daysParam);
   const points = await res.json();
   const el = document.getElementById("heatmap");
   const empty = document.getElementById("heatmap-empty");
@@ -142,8 +150,10 @@ async function loadHeatmap() {
   empty.style.display = "none";
 
   const serialized = JSON.stringify(points);
-  if (serialized === lastHeatmapData && heatMap) {
-    // Nothing new - don't touch the layer or the view at all.
+  const unchanged = serialized === lastHeatmapData && heatMap;
+  if (unchanged && !forceRefit) {
+    // Nothing new, and nobody explicitly asked for a re-fit - don't touch
+    // the layer or the view at all.
     return;
   }
   const isFirstLoad = !heatMap;
@@ -168,12 +178,14 @@ async function loadHeatmap() {
     heatLayer = L.heatLayer(heatPoints, { radius: 20, blur: 25, maxZoom: 17 }).addTo(heatMap);
   }
 
-  if (isFirstLoad) {
-    // Only fit the view to the data on the very first load - subsequent
-    // refreshes must never reset wherever the user has panned/zoomed to.
+  if (isFirstLoad || forceRefit) {
+    // Fit the view to the data on the very first load, and whenever the
+    // user explicitly changes the time range (forceRefit) since the extent
+    // of the data likely changed a lot - but never on a routine periodic
+    // refresh, which must not reset wherever the user has panned/zoomed to.
     const bounds = L.latLngBounds(heatPoints.map((p) => [p[0], p[1]]));
     heatMap.fitBounds(bounds, { padding: [20, 20], maxZoom: 15 });
-    setTimeout(() => heatMap.invalidateSize(), 100);
+    if (isFirstLoad) setTimeout(() => heatMap.invalidateSize(), 100);
   }
 }
 
@@ -249,6 +261,7 @@ function refreshTab(tab) {
     loadTopSpecies();
     loadLastLocation();
     loadHeatmap();
+    loadLastSynced();
   } else if (tab === "calendar") {
     loadCalendar(currentYear, currentMonth);
   } else if (tab === "history") {
@@ -262,6 +275,7 @@ function refreshTab(tab) {
   } else if (tab === "settings") {
     document.getElementById("setting-hide-trainer").checked = hideTrainerName;
     document.getElementById("setting-chart-days").value = String(chartDays);
+    document.getElementById("setting-heatmap-days").value = heatmapDays;
     document.getElementById("setting-timezone").value = userTimezone;
     document.getElementById("setting-notify-shiny").checked = notifyShiny;
     document.getElementById("setting-notify-iv100").checked = notifyIv100;
@@ -288,6 +302,8 @@ function updateChartTitles() {
   document.getElementById("line-chart-title").textContent = "Catches - Last " + chartDays + " Days";
   document.getElementById("bar-chart-title").textContent = "Top Pokemon (" + chartDays + " Days)";
   document.getElementById("raid-bar-chart-title").textContent = "Most Common Raid Bosses (" + chartDays + " Days)";
+  document.getElementById("heatmap-title").textContent = "Catch Density Heatmap (" +
+    (heatmapDays === "all" ? "All Time" : "Last " + heatmapDays + " Days") + ")";
 }
 
 function onChartDaysChange() {
@@ -297,6 +313,16 @@ function onChartDaysChange() {
   loadTimeseries();
   loadTopSpecies();
   loadRaidTopSpecies();
+}
+
+function onHeatmapDaysChange() {
+  heatmapDays = document.getElementById("setting-heatmap-days").value;
+  localStorage.setItem("pogostats_heatmap_days", heatmapDays);
+  updateChartTitles();
+  // forceRefit=true: the data extent likely changed a lot (e.g. going from
+  // 30 days to All Time), so re-fit the view instead of leaving it where it
+  // was for the old, narrower range.
+  loadHeatmap(true);
 }
 
 // A short, curated fallback list for browsers that don't support
@@ -341,6 +367,7 @@ function onTimezoneChange() {
   loadCalendar(currentYear, currentMonth);
   loadRaidSummary();
   loadRaidTopSpecies();
+  loadHeatmap(true);
 }
 
 async function ensureNotificationPermission() {
@@ -474,6 +501,37 @@ async function checkForNewCatchNotifications() {
   if (newEntries.length) {
     localStorage.setItem("pogostats_last_notified_ts", lastNotifiedTs);
   }
+}
+
+function formatRelativeTime(ts) {
+  // Same "Z"-suffix handling as formatHistoryTimestamp - ts is naive UTC
+  // from the backend and only gets a timezone marker appended if it
+  // doesn't already have one.
+  const hasTz = /[Zz]$|[+-]\d{2}:\d{2}$/.test(ts);
+  const d = new Date(hasTz ? ts : ts + "Z");
+  if (isNaN(d.getTime())) return "";
+  const diffSec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  if (diffSec < 60) return "just now";
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return diffMin + (diffMin === 1 ? " minute ago" : " minutes ago");
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return diffHour + (diffHour === 1 ? " hour ago" : " hours ago");
+  const diffDay = Math.floor(diffHour / 24);
+  return diffDay + (diffDay === 1 ? " day ago" : " days ago");
+}
+
+// Shows how long ago the last catch/flee/raid was actually recorded -
+// separate from whether the Bot/Backend processes are technically running
+// (the tray icon/status window only knows that much). If this stops moving
+// forward while you're actively playing, that's a sign the bot silently
+// stopped receiving Discord events (expired token, network issue, etc.)
+// even though the process itself might still look "up".
+async function loadLastSynced() {
+  const el = document.getElementById("last-synced");
+  if (!el) return;
+  const res = await fetch("/api/last-synced");
+  const data = await res.json();
+  el.textContent = data.ts ? "Last catch synced " + formatRelativeTime(data.ts) : "No catches recorded yet.";
 }
 
 async function loadSummary() {
@@ -951,6 +1009,7 @@ function loadMoreRaidHistory() {
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("setting-hide-trainer").checked = hideTrainerName;
   document.getElementById("setting-chart-days").value = String(chartDays);
+  document.getElementById("setting-heatmap-days").value = heatmapDays;
   populateTimezoneOptions();
   document.getElementById("setting-notify-shiny").checked = notifyShiny;
   document.getElementById("setting-notify-iv100").checked = notifyIv100;
@@ -968,6 +1027,12 @@ document.addEventListener("DOMContentLoaded", () => {
   loadLastLocation();
   setInterval(loadLastLocation, 60000);
   loadHeatmap();
+  loadLastSynced();
+  // Refreshed on its own faster cadence than the general per-tab refresh
+  // below, since the whole point is a relative-time display ("5 minutes
+  // ago") that should keep advancing even while just sitting on the
+  // Dashboard tab.
+  setInterval(loadLastSynced, 30000);
 
   loadSummary();
   loadTimeseries();

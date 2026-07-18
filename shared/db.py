@@ -34,6 +34,13 @@ BACKUP_KEEP = 7
 # naive UTC string, and compare/bucket against that.
 DEFAULT_TZ = "UTC"
 
+# How long a connection waits for a lock held by another connection (Bot and
+# Backend both write to the same DB file) before giving up with "database is
+# locked", in milliseconds. SQLite's/Python's own default is 5000ms - raised
+# here since a write burst (several catches arriving in quick succession)
+# made that occasionally too short in practice.
+BUSY_TIMEOUT_MS = 15000
+
 
 def _resolve_tz(tz_name):
     """Falls back to UTC for a missing, empty, or unrecognized timezone name,
@@ -84,9 +91,14 @@ def _apply_pragmas(conn):
     interrupted writes (crash, power loss, sync tools like OneDrive touching
     the file mid-write). In the old rollback-journal mode, a transaction that
     grows the file (e.g. when creating the raids table) could leave behind an
-    incomplete file if interrupted - which is exactly what happened once."""
+    incomplete file if interrupted - which is exactly what happened once.
+
+    busy_timeout controls how long a connection waits for another
+    connection's lock (Bot and Backend both write here) before raising
+    "database is locked", instead of failing immediately."""
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=" + str(BUSY_TIMEOUT_MS))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS catches (
@@ -205,6 +217,14 @@ def init_db(db_path=DB_PATH):
 def get_conn(db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    # Manual transaction control (autocommit mode): lets insert_catch/
+    # insert_raid below issue an explicit "BEGIN IMMEDIATE" instead of
+    # relying on sqlite3's default "deferred" transactions, which only
+    # acquire the write lock on the first actual write - leaving a window
+    # where two connections can both start a read-then-write sequence and
+    # then race to upgrade to a write lock at the same time. Read-only
+    # functions are unaffected: a bare SELECT commits itself either way.
+    conn.isolation_level = None
     _apply_pragmas(conn)
     try:
         yield conn
@@ -248,68 +268,81 @@ def insert_catch(ts, event_type, trainer, pokemon_id, pokemon_name, shiny, iv100
                   db_path=DB_PATH):
     ts_str = _normalize_ts(ts)
     with get_conn(db_path) as conn:
-        if event_type == "catch":
-            # If this catch was already recorded as a raid catch (some
-            # PolygonX setups send a regular catch embed in addition to the
-            # raid message for the same catch), don't store it twice.
-            dup_id = _find_recent_match(conn, "raids", trainer, pokemon_id, iv_atk, iv_def, iv_sta, ts_str)
-            if dup_id is not None:
-                return
-        conn.execute(
-            "INSERT INTO catches (ts, event_type, trainer, pokemon_id, pokemon_name, shiny, iv100, lat, lon, "
-            "iv_atk, iv_def, iv_sta, cp, level) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                ts_str,
-                event_type,
-                trainer,
-                pokemon_id,
-                pokemon_name,
-                int(shiny),
-                int(iv100),
-                lat,
-                lon,
-                iv_atk,
-                iv_def,
-                iv_sta,
-                cp,
-                level,
-            ),
-        )
-        conn.commit()
+        # BEGIN IMMEDIATE acquires the write lock upfront (see get_conn's
+        # comment) rather than only once the INSERT statement runs.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if event_type == "catch":
+                # If this catch was already recorded as a raid catch (some
+                # PolygonX setups send a regular catch embed in addition to
+                # the raid message for the same catch), don't store it twice.
+                dup_id = _find_recent_match(conn, "raids", trainer, pokemon_id, iv_atk, iv_def, iv_sta, ts_str)
+                if dup_id is not None:
+                    conn.commit()
+                    return
+            conn.execute(
+                "INSERT INTO catches (ts, event_type, trainer, pokemon_id, pokemon_name, shiny, iv100, lat, lon, "
+                "iv_atk, iv_def, iv_sta, cp, level) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    ts_str,
+                    event_type,
+                    trainer,
+                    pokemon_id,
+                    pokemon_name,
+                    int(shiny),
+                    int(iv100),
+                    lat,
+                    lon,
+                    iv_atk,
+                    iv_def,
+                    iv_sta,
+                    cp,
+                    level,
+                ),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def insert_raid(ts, trainer, pokemon_id, pokemon_name, shiny, iv100, lat=None, lon=None,
                  iv_atk=None, iv_def=None, iv_sta=None, cp=None, level=None, db_path=DB_PATH):
     ts_str = _normalize_ts(ts)
     with get_conn(db_path) as conn:
-        # If the matching regular catch already came in (shortly) before,
-        # remove that row - the raid entry is the authoritative source.
-        dup_id = _find_recent_match(conn, "catches", trainer, pokemon_id, iv_atk, iv_def, iv_sta, ts_str)
-        if dup_id is not None:
-            conn.execute("DELETE FROM catches WHERE id = ?", (dup_id,))
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # If the matching regular catch already came in (shortly) before,
+            # remove that row - the raid entry is the authoritative source.
+            dup_id = _find_recent_match(conn, "catches", trainer, pokemon_id, iv_atk, iv_def, iv_sta, ts_str)
+            if dup_id is not None:
+                conn.execute("DELETE FROM catches WHERE id = ?", (dup_id,))
 
-        conn.execute(
-            "INSERT INTO raids (ts, trainer, pokemon_id, pokemon_name, shiny, iv100, lat, lon, "
-            "iv_atk, iv_def, iv_sta, cp, level) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                ts_str,
-                trainer,
-                pokemon_id,
-                pokemon_name,
-                int(shiny),
-                int(iv100),
-                lat,
-                lon,
-                iv_atk,
-                iv_def,
-                iv_sta,
-                cp,
-                level,
-            ),
-        )
-        conn.commit()
+            conn.execute(
+                "INSERT INTO raids (ts, trainer, pokemon_id, pokemon_name, shiny, iv100, lat, lon, "
+                "iv_atk, iv_def, iv_sta, cp, level) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    ts_str,
+                    trainer,
+                    pokemon_id,
+                    pokemon_name,
+                    int(shiny),
+                    int(iv100),
+                    lat,
+                    lon,
+                    iv_atk,
+                    iv_def,
+                    iv_sta,
+                    cp,
+                    level,
+                ),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def _count_raids(conn, where, params=()):
@@ -435,7 +468,7 @@ def get_rolling_summary(hours=24, db_path=DB_PATH):
     Since ts is stored as naive UTC and this is a pure rolling window (not a
     local calendar date), no timezone conversion is needed here at all -
     just compare against UTC now."""
-    cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat(timespec="seconds")
+    cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)).isoformat(timespec="seconds")
     with get_conn(db_path) as conn:
         summary = {}
         summary["hours"] = hours
@@ -611,18 +644,36 @@ def get_calendar_month(year, month, db_path=DB_PATH, tz=DEFAULT_TZ):
     return result
 
 
-def get_all_locations(db_path=DB_PATH):
+def get_all_locations(days=None, db_path=DB_PATH, tz=DEFAULT_TZ):
     """Returns just the coordinates (no other details) of every catch/raid
     with a known location - used for the dashboard heatmap. Deliberately
     stripped down to lat/lon only, since the heatmap should show density,
-    not per-catch identity."""
+    not per-catch identity.
+
+    days=None returns the full, unbounded history (the original behavior -
+    still available as an explicit "All Time" choice in Settings). Otherwise
+    only catches/raids from the last `days` days (in the given timezone) are
+    included. Without a time window, the heatmap accumulates every catch
+    ever recorded and after weeks/months just turns into an undifferentiated
+    blob around wherever you're usually active, rather than showing where
+    you've recently actually been - so the frontend now defaults to a
+    30-day window instead of "since the beginning"."""
     with get_conn(db_path) as conn:
-        query = (
-            "SELECT lat, lon FROM catches WHERE lat IS NOT NULL AND lon IS NOT NULL "
-            "UNION ALL "
-            "SELECT lat, lon FROM raids WHERE lat IS NOT NULL AND lon IS NOT NULL"
-        )
-        rows = conn.execute(query).fetchall()
+        if days is not None:
+            cutoff_bound = _local_midnight_to_utc_naive(_local_today(tz) - timedelta(days=days), tz)
+            query = (
+                "SELECT lat, lon FROM catches WHERE lat IS NOT NULL AND lon IS NOT NULL AND ts >= ? "
+                "UNION ALL "
+                "SELECT lat, lon FROM raids WHERE lat IS NOT NULL AND lon IS NOT NULL AND ts >= ?"
+            )
+            rows = conn.execute(query, (cutoff_bound, cutoff_bound)).fetchall()
+        else:
+            query = (
+                "SELECT lat, lon FROM catches WHERE lat IS NOT NULL AND lon IS NOT NULL "
+                "UNION ALL "
+                "SELECT lat, lon FROM raids WHERE lat IS NOT NULL AND lon IS NOT NULL"
+            )
+            rows = conn.execute(query).fetchall()
         return [{"lat": row["lat"], "lon": row["lon"]} for row in rows]
 
 
@@ -664,6 +715,21 @@ def get_all_events(db_path=DB_PATH):
                 "lon": row["lon"],
             })
         return entries
+
+
+def get_last_event_ts(db_path=DB_PATH):
+    """Returns the ts (naive UTC string) of the most recently recorded
+    catch/flee/raid across both tables, or None if the database has no
+    events at all yet. Two consumers: the bot's startup catch-up (how far
+    back to look for messages that arrived while it was offline) and the
+    dashboard's "last synced" indicator - deliberately not filtered by
+    lat/lon presence like get_last_location, since flees/GPS-less catches
+    should still count as "the bot is alive and processing things"."""
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT MAX(ts) AS ts FROM (SELECT ts FROM catches UNION ALL SELECT ts FROM raids)"
+        ).fetchone()
+        return row["ts"] if row and row["ts"] else None
 
 
 def get_last_location(db_path=DB_PATH):

@@ -14,6 +14,7 @@ import csv
 import io
 from datetime import date
 from pathlib import Path
+from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -38,17 +39,30 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # would be needlessly slow. No network calls, no API key.
 _tzfinder = TimezoneFinder()
 
+# Shared across every sprite request instead of opening a new httpx client
+# (and its own connection pool) per request - created on startup, closed on
+# shutdown, see below.
+_http_client: Optional[httpx.AsyncClient] = None
+
 
 @app.on_event("startup")
 def startup():
+    global _http_client
     db.init_db()
     SPRITE_CACHE.mkdir(parents=True, exist_ok=True)
+    _http_client = httpx.AsyncClient()
     # Daily backup so that if the DB ever gets corrupted (see the incident
     # with the raids table), at most one day of data is lost.
     try:
         db.backup_db()
     except Exception as exc:  # Backup must never block startup.
         print("Warning: DB backup failed on startup:", exc)
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    if _http_client is not None:
+        await _http_client.aclose()
 
 
 @app.get("/api/summary")
@@ -100,9 +114,25 @@ def last_location():
     return loc
 
 
+@app.get("/api/last-synced")
+def last_synced():
+    # Deliberately separate from /api/last-location: that endpoint only
+    # considers entries with GPS data, so a flee or a GPS-less catch (both
+    # valid signs the bot is alive and working) wouldn't move it. This one
+    # answers a narrower question - "when did anything last get recorded at
+    # all" - for the dashboard's "last synced" indicator.
+    return {"ts": db.get_last_event_ts()}
+
+
 @app.get("/api/locations")
-def locations():
-    return db.get_all_locations()
+def locations(days: Optional[int] = None, tz: str = "UTC"):
+    # days=None (the frontend leaves the param off entirely for its
+    # "All Time" heatmap option) means unbounded/all-time - matches
+    # db.get_all_locations' own default. The frontend itself defaults its
+    # own heatmapDays setting to "30" (see app.js), so in normal use this
+    # endpoint is always called with an explicit days value; None/omitted
+    # is only reached via the deliberate "All Time" choice.
+    return db.get_all_locations(days=days, tz=tz)
 
 
 @app.get("/api/export/csv")
@@ -157,8 +187,7 @@ async def _get_or_cache_sprite(pokemon_id: int, shiny: bool) -> Path:
         url = SPRITE_URL.format(id=pokemon_id)
 
     if not cache_file.exists():
-        async with httpx.AsyncClient() as http_client:
-            resp = await http_client.get(url, follow_redirects=True, timeout=10)
+        resp = await _http_client.get(url, follow_redirects=True, timeout=10)
         if resp.status_code != 200 or not resp.content:
             raise HTTPException(404, "Sprite not found")
         cache_file.write_bytes(resp.content)

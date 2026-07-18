@@ -129,6 +129,11 @@ body {
   margin: 8px 0 0;
   text-transform: capitalize;
 }
+.clock-sync {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 10px 0 0;
+}
 .map-card {
   background: var(--surface);
   border: 1px solid var(--border);
