@@ -173,6 +173,8 @@
       </select>
       <label for="setting-heatmap-days" class="top-species" style="margin-top: 12px; display: block;">Heatmap time range:</label>
       <select id="setting-heatmap-days" onchange="onHeatmapDaysChange()">
+        <option value="1">Last 24 Hours</option>
+        <option value="7">Last 7 Days</option>
         <option value="30" selected>Last 30 Days</option>
         <option value="90">Last 90 Days</option>
         <option value="365">Last Year</option>
