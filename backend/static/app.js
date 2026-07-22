@@ -324,12 +324,23 @@ function onHideTrainerChange() {
   loadRaidHistoryPage(true);
 }
 
+// "Last 24 Hours" for the 1-day range (matches the heatmap's wording),
+// otherwise "Last N Days". Keeps "1 Days" out of the chart titles.
+function chartRangeLabel() {
+  return chartDays === 1 ? "24 Hours" : chartDays + " Days";
+}
+
+function heatmapRangeLabel() {
+  if (heatmapDays === "all") return "All Time";
+  if (heatmapDays === "1") return "Last 24 Hours";
+  return "Last " + heatmapDays + " Days";
+}
+
 function updateChartTitles() {
-  document.getElementById("line-chart-title").textContent = "Catches - Last " + chartDays + " Days";
-  document.getElementById("bar-chart-title").textContent = "Top Pokemon (" + chartDays + " Days)";
-  document.getElementById("raid-bar-chart-title").textContent = "Most Common Raid Bosses (" + chartDays + " Days)";
-  document.getElementById("heatmap-title").textContent = "Catch Density Heatmap (" +
-    (heatmapDays === "all" ? "All Time" : "Last " + heatmapDays + " Days") + ")";
+  document.getElementById("line-chart-title").textContent = "Catches - Last " + chartRangeLabel();
+  document.getElementById("bar-chart-title").textContent = "Top Pokemon (" + chartRangeLabel() + ")";
+  document.getElementById("raid-bar-chart-title").textContent = "Most Common Raid Bosses (" + chartRangeLabel() + ")";
+  document.getElementById("heatmap-title").textContent = "Catch Density Heatmap (" + heatmapRangeLabel() + ")";
 }
 
 function onChartDaysChange() {

@@ -21,9 +21,12 @@ trusted LAN (see .env.example):
 import asyncio
 import base64
 import csv
+import hashlib
+import hmac
 import io
 import os
 import secrets
+import time
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -72,6 +75,12 @@ URL_BASE = _normalize_url_base(os.environ.get("URL_BASE", ""))
 AUTH_USER = os.environ.get("DASHBOARD_USER", "")
 AUTH_PASS = os.environ.get("DASHBOARD_PASSWORD", "")
 
+# After a correct login, a signed session cookie is issued so the browser
+# stays logged in (no popup) for this long - even across browser restarts -
+# instead of only for as long as it happens to cache the Basic Auth header.
+SESSION_COOKIE = "pogo_session"
+SESSION_TTL_SECONDS = 24 * 60 * 60
+
 app = FastAPI(title="PoGo Stats API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -95,19 +104,70 @@ def _check_basic_auth(header):
     return user_ok and pass_ok
 
 
+def _session_key():
+    """HMAC key for the session cookie, derived from the credentials so that
+    changing the password automatically invalidates every cookie issued under
+    the old one. Never leaves the server."""
+    return (AUTH_USER + ":" + AUTH_PASS).encode("utf-8")
+
+
+def _sign_session(expiry_str):
+    return hmac.new(_session_key(), expiry_str.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _make_session_token(expiry):
+    expiry_str = str(expiry)
+    return expiry_str + "." + _sign_session(expiry_str)
+
+
+def _valid_session_cookie(token):
+    """True only if `token` is a cookie this server signed and it hasn't
+    expired - so it can't be forged without the password-derived key."""
+    if not token or "." not in token:
+        return False
+    expiry_str, _, sig = token.partition(".")
+    try:
+        if int(expiry_str) < int(time.time()):
+            return False
+    except ValueError:
+        return False
+    return hmac.compare_digest(sig, _sign_session(expiry_str))
+
+
 @app.middleware("http")
 async def basic_auth_middleware(request: Request, call_next):
     """Gates every request (API, sprites, AND the static frontend) behind HTTP
     Basic Auth when credentials are configured. Implemented as middleware
     rather than a per-route dependency precisely so it also covers the
-    StaticFiles mount, which dependencies can't reach. A 401 with the
-    WWW-Authenticate header is what makes the browser show its native login
-    popup."""
-    if AUTH_USER and AUTH_PASS and not _check_basic_auth(request.headers.get("Authorization")):
-        return Response(
-            status_code=401,
-            headers={"WWW-Authenticate": 'Basic realm="PoGo Stats"'},
-        )
+    StaticFiles mount, which dependencies can't reach.
+
+    A correct Basic Auth login (401 + WWW-Authenticate is what triggers the
+    browser's native popup) also mints a signed, day-long session cookie, so
+    the user isn't re-prompted on every browser restart - a valid cookie alone
+    is accepted on later requests without any credentials."""
+    if AUTH_USER and AUTH_PASS:
+        cookie_ok = _valid_session_cookie(request.cookies.get(SESSION_COOKIE))
+        header_ok = False if cookie_ok else _check_basic_auth(request.headers.get("Authorization"))
+        if not cookie_ok and not header_ok:
+            return Response(
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="PoGo Stats"'},
+            )
+        response = await call_next(request)
+        # Issue/refresh the session cookie only on a fresh password login, so
+        # the 24h window starts at login and subsequent requests ride the
+        # cookie instead of re-sending credentials.
+        if header_ok:
+            expiry = int(time.time()) + SESSION_TTL_SECONDS
+            response.set_cookie(
+                SESSION_COOKIE,
+                _make_session_token(expiry),
+                max_age=SESSION_TTL_SECONDS,
+                httponly=True,
+                samesite="lax",
+                path=URL_BASE or "/",
+            )
+        return response
     return await call_next(request)
 
 

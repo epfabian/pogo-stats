@@ -124,9 +124,12 @@ local network. To reach it from outside:
 
 1. **Password protection** - set `DASHBOARD_USER` and `DASHBOARD_PASSWORD` in
    `.env`. The whole dashboard and API then require HTTP Basic Auth, so the
-   browser shows its native login popup (the same idea as Sonarr/Radarr).
-   Because Basic Auth sends the credentials on every request, only ever expose
-   it over **HTTPS**.
+   browser shows its native login popup (the same idea as Sonarr/Radarr). A
+   correct login sets a signed, HTTP-only session cookie so the device stays
+   logged in for 24 hours (across browser restarts) without re-prompting;
+   changing the password invalidates any existing session. Because the
+   credentials still travel over the wire on the initial login, only ever
+   expose it over **HTTPS**.
 2. **Sub-path** - set `URL_BASE` (e.g. `/pogo`) to serve everything under
    `DOMAIN/pogo` instead of the domain root, so it can share a hostname with
    other apps behind a reverse proxy. Forward the prefix as-is; don't strip it.
@@ -174,8 +177,8 @@ or Tailscale) so the whole thing runs over HTTPS.
   and paginated history.
 - **Settings** - hide your trainer name from the interface and CSV export,
   opt in to browser notifications for shiny / 100% IV / shiny+100% IV
-  catches (off by default), and set how many days back the dashboard/raid
-  charts and the heatmap each look.
+  catches (off by default), and set how far back the dashboard/raid charts
+  (from the last 24 hours up to 90 days) and the heatmap each look.
 - **About** - credits for every third-party library and data source this
   project relies on.
 - **CSV export** - download the full catch/flee/raid history as a CSV file
