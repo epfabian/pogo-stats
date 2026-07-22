@@ -385,13 +385,23 @@ def get_raid_top_species(days=30, limit=10, db_path=DB_PATH, tz=DEFAULT_TZ):
         return output
 
 
-def get_raid_history(limit=50, offset=0, shiny_only=False, iv100_only=False, db_path=DB_PATH):
+def get_raid_history(limit=50, offset=0, shiny_only=False, iv100_only=False,
+                     trainer=None, name_query=None, db_path=DB_PATH):
     with get_conn(db_path) as conn:
         where = "1=1"
+        params = []
         if shiny_only:
             where += " AND shiny = 1"
         if iv100_only:
             where += " AND iv100 = 1"
+        # trainer/name_query come from the client, so they're parameterized
+        # (never string-concatenated) to keep this injection-safe.
+        if trainer:
+            where += " AND trainer = ?"
+            params.append(trainer)
+        if name_query:
+            where += " AND pokemon_name LIKE ?"
+            params.append("%" + name_query + "%")
 
         query = (
             "SELECT id, ts, trainer, pokemon_id, pokemon_name, shiny, iv100, lat, lon, "
@@ -399,8 +409,8 @@ def get_raid_history(limit=50, offset=0, shiny_only=False, iv100_only=False, db_
             "FROM raids WHERE " + where + " "
             "ORDER BY ts DESC LIMIT ? OFFSET ?"
         )
-        rows = conn.execute(query, (limit, offset)).fetchall()
-        total = _count_raids(conn, where)
+        rows = conn.execute(query, tuple(params) + (limit, offset)).fetchall()
+        total = _count_raids(conn, where, tuple(params))
 
         entries = []
         for row in rows:
@@ -564,7 +574,8 @@ def get_day_stats(day, db_path=DB_PATH, tz=DEFAULT_TZ):
         return result
 
 
-def get_history(limit=50, offset=0, event_type=None, shiny_only=False, iv100_only=False, db_path=DB_PATH):
+def get_history(limit=50, offset=0, event_type=None, shiny_only=False, iv100_only=False,
+                trainer=None, name_query=None, db_path=DB_PATH):
     with get_conn(db_path) as conn:
         where = "1=1"
         params = []
@@ -575,6 +586,14 @@ def get_history(limit=50, offset=0, event_type=None, shiny_only=False, iv100_onl
             where += " AND shiny = 1"
         if iv100_only:
             where += " AND iv100 = 1"
+        # trainer/name_query come from the client, so they're parameterized
+        # (never string-concatenated) to keep this injection-safe.
+        if trainer:
+            where += " AND trainer = ?"
+            params.append(trainer)
+        if name_query:
+            where += " AND pokemon_name LIKE ?"
+            params.append("%" + name_query + "%")
 
         query = (
             "SELECT id, ts, event_type, trainer, pokemon_id, pokemon_name, shiny, iv100, lat, lon, "
@@ -612,6 +631,20 @@ def get_history(limit=50, offset=0, event_type=None, shiny_only=False, iv100_onl
         result["limit"] = limit
         result["offset"] = offset
         return result
+
+
+def get_trainers(db_path=DB_PATH):
+    """Distinct, non-empty trainer names across both catches and raids, sorted
+    alphabetically - used to populate the History tab's per-account filter.
+    Multiple trainers can post into the same channel, so this is what makes the
+    dashboard usable as a multi-account tool."""
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT trainer FROM ("
+            "SELECT trainer FROM catches UNION SELECT trainer FROM raids"
+            ") WHERE trainer IS NOT NULL AND trainer != '' ORDER BY trainer COLLATE NOCASE"
+        ).fetchall()
+        return [row["trainer"] for row in rows]
 
 
 def get_calendar_month(year, month, db_path=DB_PATH, tz=DEFAULT_TZ):

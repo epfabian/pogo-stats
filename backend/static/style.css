@@ -322,13 +322,17 @@ body {
 .display-btn + .display-btn { border-left: 1px solid var(--border); }
 .display-btn:hover { color: var(--text); }
 .display-btn.active { background: var(--accent-bg); color: var(--accent); }
-.history-toolbar select {
+.history-toolbar select,
+.history-search {
   background: var(--surface-2);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 6px 10px;
   font-size: 13px;
+}
+.history-search {
+  min-width: 150px;
 }
 .history-raid-toggle {
   display: flex;

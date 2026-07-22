@@ -67,6 +67,23 @@ DISCORD_TOKEN=your-bot-token
 CHANNEL_ID=<channel id>
 ```
 
+Two optional settings let you expose the dashboard beyond a trusted LAN. Both
+are blank by default, which keeps the original no-auth, served-at-root
+behavior:
+
+```
+# Password-protect the dashboard (browser login popup, Sonarr-style).
+# Set BOTH to enable; leave BOTH blank to disable.
+DASHBOARD_USER=you
+DASHBOARD_PASSWORD=a-long-random-password
+
+# Serve under a sub-path so it can live at DOMAIN/pogo behind a reverse
+# proxy. Leave blank to serve at the root.
+URL_BASE=/pogo
+```
+
+See [Remote access](#remote-access-optional) below for how these fit together.
+
 ### 4. Start it
 
 On Windows, just double-click `start.vbs` - that's the only file you need
@@ -100,6 +117,31 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000
 environment, so this manual route is also the one to use if you ever want
 to run PoGo Stats on non-Windows hardware.
 
+## Remote access (optional)
+
+By default the dashboard has no authentication and is meant for a trusted
+local network. To reach it from outside:
+
+1. **Password protection** - set `DASHBOARD_USER` and `DASHBOARD_PASSWORD` in
+   `.env`. The whole dashboard and API then require HTTP Basic Auth, so the
+   browser shows its native login popup (the same idea as Sonarr/Radarr).
+   Because Basic Auth sends the credentials on every request, only ever expose
+   it over **HTTPS**.
+2. **Sub-path** - set `URL_BASE` (e.g. `/pogo`) to serve everything under
+   `DOMAIN/pogo` instead of the domain root, so it can share a hostname with
+   other apps behind a reverse proxy. Forward the prefix as-is; don't strip it.
+   Example nginx:
+
+   ```
+   location /pogo/ {
+       proxy_pass http://127.0.0.1:8000/pogo/;
+       proxy_set_header Host $host;
+   }
+   ```
+
+Terminate TLS at the reverse proxy (or use a tunnel such as Cloudflare Tunnel
+or Tailscale) so the whole thing runs over HTTPS.
+
 ## Features
 
 - **Dashboard** - live clock, last-catch map (with the local time *at* that
@@ -124,8 +166,10 @@ to run PoGo Stats on non-Windows hardware.
   raids.
 - **History** - paginated, filterable list of every recorded catch/flee,
   with a Catches/Raids sub-tab to browse raid catches the same way. Filter
-  by Shiny only, 100% IV only, or both together (for shundos), and switch
-  between a detailed List view or a more compact Grid view.
+  by Shiny only, 100% IV only, or both together (for shundos), by **account**
+  (trainer), or **search by Pokemon name**, and switch between a detailed List
+  view or a more compact Grid view. The account filter makes the tool usable
+  when several trainers post into the same channel.
 - **Raids** - a separate top-level tab with its own summary, top-boss chart,
   and paginated history.
 - **Settings** - hide your trainer name from the interface and CSV export,
@@ -168,6 +212,16 @@ changed.
   outage doesn't silently mean lost catches. This only runs if the database
   already has at least one prior event to use as a starting point - on a
   brand new install there's nothing to catch up to yet.
+
+## Running the tests
+
+```
+pip install -r requirements-dev.txt
+pytest
+```
+
+Covers the embed parser (`shared/parser.py`) plus the raid/catch
+de-duplication and the History account/name filters in `shared/db.py`.
 
 ## Pokemon sprites
 

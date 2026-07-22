@@ -6,8 +6,22 @@ if (window.Chart) {
   Chart.defaults.borderColor = "rgba(255,255,255,0.08)";
 }
 
+// Path the app is served under: "" at the domain root, or e.g. "/pogo" when the
+// backend runs with URL_BASE set behind a reverse proxy. Derived from this
+// script's own URL (loaded as <script src="app.js"> relative to the page), so
+// the frontend needs no server-side templating and works at any mount point.
+const APP_BASE = (function () {
+  try {
+    const src = document.currentScript && document.currentScript.src;
+    if (src) {
+      return new URL(src, window.location.href).pathname.replace(/\/app\.js(?:\?.*)?$/, "");
+    }
+  } catch (e) {}
+  return "";
+})();
+
 function spriteUrl(pokemonId, shiny) {
-  return "/sprites/" + pokemonId + ".png" + (shiny ? "?shiny=true" : "");
+  return APP_BASE + "/sprites/" + pokemonId + ".png" + (shiny ? "?shiny=true" : "");
 }
 
 function ivPercent(atk, def, sta) {
@@ -66,7 +80,7 @@ function lastLocationPinIcon() {
 }
 
 async function loadLastLocation() {
-  const res = await fetch("/api/last-location");
+  const res = await fetch(APP_BASE + "/api/last-location");
   const data = await res.json();
   const mapEl = document.getElementById("last-location-map");
   const empty = document.getElementById("map-empty");
@@ -135,7 +149,7 @@ let heatmapDays = localStorage.getItem("pogostats_heatmap_days") || "30";
 
 async function loadHeatmap(forceRefit) {
   const daysParam = heatmapDays === "all" ? "" : "&days=" + heatmapDays;
-  const res = await fetch("/api/locations?tz=" + encodeURIComponent(userTimezone) + daysParam);
+  const res = await fetch(APP_BASE + "/api/locations?tz=" + encodeURIComponent(userTimezone) + daysParam);
   const points = await res.json();
   const el = document.getElementById("heatmap");
   const empty = document.getElementById("heatmap-empty");
@@ -238,6 +252,13 @@ let historyDisplayMode = localStorage.getItem("pogostats_history_display") || "l
 // Every entry loaded so far across "Load More" pages, kept around so
 // switching List/Grid re-renders instantly without refetching.
 let lastHistoryEntries = [];
+// Multi-account filter + Pokemon-name search for the History tab. Not
+// persisted - these are per-session filters (like the shiny/100%/type
+// filters above), not sticky preferences. Both apply to the Catches and the
+// Raids sub-tab of History alike.
+let historyTrainer = "";
+let historySearch = "";
+let historySearchDebounce = null;
 
 function showTab(tab) {
   currentTab = tab;
@@ -248,6 +269,11 @@ function showTab(tab) {
   if (tab === "dashboard") {
     if (lastLocationMap) setTimeout(() => lastLocationMap.invalidateSize(), 50);
     if (heatMap) setTimeout(() => heatMap.invalidateSize(), 50);
+  }
+  if (tab === "history") {
+    // Refresh the account dropdown when the tab is opened (once here, not on
+    // the 15s auto-refresh) so newly-seen trainers appear without a reload.
+    loadTrainerFilterOptions();
   }
   // Refresh this tab's data every time it's switched to, so newly arrived
   // catches/raids show up without needing a full page reload.
@@ -285,7 +311,7 @@ function refreshTab(tab) {
 }
 
 function updateExportLink() {
-  document.getElementById("export-csv-link").href = "/api/export/csv?hide_trainer=" + hideTrainerName;
+  document.getElementById("export-csv-link").href = APP_BASE + "/api/export/csv?hide_trainer=" + hideTrainerName;
 }
 
 function onHideTrainerChange() {
@@ -436,8 +462,8 @@ async function onNotifySettingChange() {
 // client-side rather than picking just one source.
 async function fetchRecentEntries(limit) {
   const [catchesRes, raidsRes] = await Promise.all([
-    fetch("/api/history?limit=" + limit),
-    fetch("/api/raids/history?limit=" + limit),
+    fetch(APP_BASE + "/api/history?limit=" + limit),
+    fetch(APP_BASE + "/api/raids/history?limit=" + limit),
   ]);
   const catchesData = await catchesRes.json();
   const raidsData = await raidsRes.json();
@@ -464,7 +490,7 @@ function fireCatchNotification(title, entry) {
   const body = entry.pokemon_name + (entry.trainer ? " · " + entry.trainer : "");
   let notif;
   try {
-    notif = new Notification(title, { body: body, icon: "/favicon.svg" });
+    notif = new Notification(title, { body: body, icon: APP_BASE + "/favicon.svg" });
   } catch (e) {
     return;
   }
@@ -529,13 +555,13 @@ function formatRelativeTime(ts) {
 async function loadLastSynced() {
   const el = document.getElementById("last-synced");
   if (!el) return;
-  const res = await fetch("/api/last-synced");
+  const res = await fetch(APP_BASE + "/api/last-synced");
   const data = await res.json();
   el.textContent = data.ts ? "Last catch synced " + formatRelativeTime(data.ts) : "No catches recorded yet.";
 }
 
 async function loadSummary() {
-  const res = await fetch("/api/summary?tz=" + encodeURIComponent(userTimezone));
+  const res = await fetch(APP_BASE + "/api/summary?tz=" + encodeURIComponent(userTimezone));
   const data = await res.json();
   document.getElementById("stat-today").textContent = data.today;
   document.getElementById("stat-week").textContent = data.week;
@@ -552,14 +578,14 @@ let lastTopSpeciesData = null;
 let lastRaidTopSpeciesData = null;
 
 async function loadRollingSummary() {
-  const res = await fetch("/api/rolling/summary?hours=24");
+  const res = await fetch(APP_BASE + "/api/rolling/summary?hours=24");
   const data = await res.json();
   document.getElementById("rolling-stat-encounters").textContent = data.encounters;
   document.getElementById("rolling-stat-raids").textContent = data.raids;
 }
 
 async function loadTimeseries() {
-  const res = await fetch("/api/timeseries?days=" + chartDays + "&tz=" + encodeURIComponent(userTimezone));
+  const res = await fetch(APP_BASE + "/api/timeseries?days=" + chartDays + "&tz=" + encodeURIComponent(userTimezone));
   const data = await res.json();
   const serialized = JSON.stringify(data);
   if (serialized === lastTimeseriesData && lineChart) return;
@@ -614,7 +640,7 @@ async function loadTimeseries() {
 }
 
 async function loadTopSpecies() {
-  const res = await fetch("/api/top-species?days=" + chartDays + "&limit=8&tz=" + encodeURIComponent(userTimezone));
+  const res = await fetch(APP_BASE + "/api/top-species?days=" + chartDays + "&limit=8&tz=" + encodeURIComponent(userTimezone));
   const data = await res.json();
   const serialized = JSON.stringify(data);
   if (serialized === lastTopSpeciesData && barChart) return;
@@ -645,7 +671,7 @@ async function loadTopSpecies() {
 }
 
 async function loadCalendar(year, month) {
-  const res = await fetch("/api/calendar/" + year + "/" + month + "?tz=" + encodeURIComponent(userTimezone));
+  const res = await fetch(APP_BASE + "/api/calendar/" + year + "/" + month + "?tz=" + encodeURIComponent(userTimezone));
   const data = await res.json();
   renderCalendar(year, month, data);
 }
@@ -691,7 +717,7 @@ async function selectDay(dateStr, cellEl) {
   document.querySelectorAll(".cal-cell.selected").forEach((el) => el.classList.remove("selected"));
   if (cellEl) cellEl.classList.add("selected");
 
-  const res = await fetch("/api/day/" + dateStr + "?tz=" + encodeURIComponent(userTimezone));
+  const res = await fetch(APP_BASE + "/api/day/" + dateStr + "?tz=" + encodeURIComponent(userTimezone));
   const data = await res.json();
   const panel = document.getElementById("day-detail");
   const dateLabel = new Date(dateStr + "T00:00:00")
@@ -870,14 +896,16 @@ async function loadHistoryPage(reset) {
 
   const shinyParam = historyShinyOnly ? "&shiny=true" : "";
   const iv100Param = historyIv100Only ? "&iv100=true" : "";
+  const trainerParam = historyTrainer ? "&trainer=" + encodeURIComponent(historyTrainer) : "";
+  const searchParam = historySearch ? "&q=" + encodeURIComponent(historySearch) : "";
 
   let url;
   if (historySubTab === "raids") {
     // Raids have no "flee" concept, so no type filter here.
-    url = "/api/raids/history?limit=" + historyLimit + "&offset=" + historyOffset + shinyParam + iv100Param;
+    url = APP_BASE + "/api/raids/history?limit=" + historyLimit + "&offset=" + historyOffset + shinyParam + iv100Param + trainerParam + searchParam;
   } else {
     const typeParam = historyFilter === "all" ? "" : "&type=" + historyFilter;
-    url = "/api/history?limit=" + historyLimit + "&offset=" + historyOffset + typeParam + shinyParam + iv100Param;
+    url = APP_BASE + "/api/history?limit=" + historyLimit + "&offset=" + historyOffset + typeParam + shinyParam + iv100Param + trainerParam + searchParam;
   }
 
   const res = await fetch(url);
@@ -901,7 +929,38 @@ function onHistoryFilterChange() {
   historyFilter = document.getElementById("history-filter").value;
   historyShinyOnly = document.getElementById("history-shiny-only").checked;
   historyIv100Only = document.getElementById("history-iv100-only").checked;
+  historyTrainer = document.getElementById("history-trainer").value;
   loadHistoryPage(true);
+}
+
+// Debounced so typing a Pokemon name doesn't fire a request per keystroke.
+function onHistorySearchInput() {
+  clearTimeout(historySearchDebounce);
+  historySearchDebounce = setTimeout(() => {
+    historySearch = document.getElementById("history-search").value.trim();
+    loadHistoryPage(true);
+  }, 250);
+}
+
+// Fills the account dropdown from the distinct trainers the backend knows
+// about, keeping the current selection if it still exists. Called on load and
+// whenever the History tab is opened, so newly-seen accounts show up.
+async function loadTrainerFilterOptions() {
+  const select = document.getElementById("history-trainer");
+  if (!select) return;
+  let trainers = [];
+  try {
+    const res = await fetch(APP_BASE + "/api/trainers");
+    trainers = await res.json();
+  } catch (e) {
+    return;
+  }
+  const previous = historyTrainer;
+  select.innerHTML = '<option value="">All accounts</option>' +
+    trainers.map((t) => '<option value="' + t.replace(/"/g, "&quot;") + '">' + t + "</option>").join("");
+  // Restore the active selection if that trainer is still present.
+  select.value = previous && trainers.includes(previous) ? previous : "";
+  historyTrainer = select.value;
 }
 
 function setHistorySubTab(tab) {
@@ -938,7 +997,7 @@ const raidHistoryLimit = 50;
 let raidHistoryTotal = 0;
 
 async function loadRaidSummary() {
-  const res = await fetch("/api/raids/summary?tz=" + encodeURIComponent(userTimezone));
+  const res = await fetch(APP_BASE + "/api/raids/summary?tz=" + encodeURIComponent(userTimezone));
   const data = await res.json();
   document.getElementById("raid-stat-today").textContent = data.today;
   document.getElementById("raid-stat-week").textContent = data.week;
@@ -948,7 +1007,7 @@ async function loadRaidSummary() {
 }
 
 async function loadRaidTopSpecies() {
-  const res = await fetch("/api/raids/top-species?days=" + chartDays + "&limit=8&tz=" + encodeURIComponent(userTimezone));
+  const res = await fetch(APP_BASE + "/api/raids/top-species?days=" + chartDays + "&limit=8&tz=" + encodeURIComponent(userTimezone));
   const data = await res.json();
   const serialized = JSON.stringify(data);
   if (serialized === lastRaidTopSpeciesData && raidBarChart) return;
@@ -984,7 +1043,7 @@ async function loadRaidHistoryPage(reset) {
     document.getElementById("raid-history-list").innerHTML = "";
   }
 
-  const res = await fetch("/api/raids/history?limit=" + raidHistoryLimit + "&offset=" + raidHistoryOffset);
+  const res = await fetch(APP_BASE + "/api/raids/history?limit=" + raidHistoryLimit + "&offset=" + raidHistoryOffset);
   const data = await res.json();
   raidHistoryTotal = data.total;
 
@@ -1038,6 +1097,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadTimeseries();
   loadTopSpecies();
   loadCalendar(currentYear, currentMonth);
+  loadTrainerFilterOptions();
   loadHistoryPage(true);
   loadRaidSummary();
   loadRaidTopSpecies();

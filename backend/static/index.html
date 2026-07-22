@@ -102,6 +102,10 @@
         <input type="checkbox" id="history-iv100-only" onchange="onHistoryFilterChange()">
         100% IV only
       </label>
+      <select id="history-trainer" onchange="onHistoryFilterChange()" title="Filter by account">
+        <option value="">All accounts</option>
+      </select>
+      <input type="search" id="history-search" class="history-search" placeholder="Search Pokemon..." oninput="onHistorySearchInput()">
       <div class="display-toggle">
         <button class="display-btn active" id="history-display-list" onclick="setHistoryDisplayMode('list')" title="List view">List</button>
         <button class="display-btn" id="history-display-grid" onclick="setHistoryDisplayMode('grid')" title="Grid view">Grid</button>
