@@ -41,6 +41,11 @@ DEFAULT_TZ = "UTC"
 # made that occasionally too short in practice.
 BUSY_TIMEOUT_MS = 15000
 
+# Rolling lookback windows (label, hours) reported by the per-species view,
+# get_species_stats. Rolling rather than calendar-day based, so "24h" really
+# means the last 24 hours from now - see that function's docstring.
+SPECIES_PERIODS = (("24h", 24), ("7d", 24 * 7), ("30d", 24 * 30))
+
 
 def _resolve_tz(tz_name):
     """Falls back to UTC for a missing, empty, or unrecognized timezone name,
@@ -645,6 +650,137 @@ def get_trainers(db_path=DB_PATH):
             ") WHERE trainer IS NOT NULL AND trainer != '' ORDER BY trainer COLLATE NOCASE"
         ).fetchall()
         return [row["trainer"] for row in rows]
+
+
+def get_species_stats(pokemon_id, trainer=None, db_path=DB_PATH):
+    """Everything known about a single species, for the History tab's
+    per-Pokemon drill-down: caught/shiny/hundo/shundo/fled counts over several
+    rolling windows plus all time, when one was last caught, and where the
+    last *located* catch happened.
+
+    Both tables are read once and aggregated in Python instead of issuing a
+    COUNT per period/metric/table (which would be ~30 queries) - the same
+    fetch-and-bucket approach get_timeseries/get_calendar_month already use,
+    and per-species row counts are small.
+
+    The windows are rolling (measured back from right now), not calendar
+    days, so "last 24 hours" means exactly that. Like get_rolling_summary
+    that means no timezone conversion is needed at all, since ts is stored as
+    naive UTC - comparing the ISO strings lexicographically is equivalent to
+    comparing the timestamps.
+
+    Raid catches count towards "caught" (a Pokemon caught after a raid is
+    still caught) and are additionally broken out as "raids". Flees never
+    count as caught; they're tallied separately as "fled"."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    cutoffs = {}
+    for key, hours in SPECIES_PERIODS:
+        cutoffs[key] = (now - timedelta(hours=hours)).isoformat(timespec="seconds")
+
+    where = "pokemon_id = ?"
+    params = [pokemon_id]
+    if trainer:
+        where += " AND trainer = ?"
+        params.append(trainer)
+
+    with get_conn(db_path) as conn:
+        catch_rows = conn.execute(
+            "SELECT ts, event_type, trainer, pokemon_name, shiny, iv100, lat, lon "
+            "FROM catches WHERE " + where, tuple(params)
+        ).fetchall()
+        raid_rows = conn.execute(
+            "SELECT ts, trainer, pokemon_name, shiny, iv100, lat, lon "
+            "FROM raids WHERE " + where, tuple(params)
+        ).fetchall()
+
+    events = []
+    for row in catch_rows:
+        events.append({
+            "ts": row["ts"],
+            "caught": row["event_type"] == "catch",
+            "fled": row["event_type"] == "flee",
+            "is_raid": False,
+            "shiny": bool(row["shiny"]),
+            "iv100": bool(row["iv100"]),
+            "lat": row["lat"],
+            "lon": row["lon"],
+            "trainer": row["trainer"],
+            "name": row["pokemon_name"],
+        })
+    for row in raid_rows:
+        events.append({
+            "ts": row["ts"],
+            "caught": True,
+            "fled": False,
+            "is_raid": True,
+            "shiny": bool(row["shiny"]),
+            "iv100": bool(row["iv100"]),
+            "lat": row["lat"],
+            "lon": row["lon"],
+            "trainer": row["trainer"],
+            "name": row["pokemon_name"],
+        })
+
+    def _blank_bucket():
+        return {"caught": 0, "raids": 0, "shiny": 0, "hundo": 0, "shundo": 0, "fled": 0}
+
+    def _tally(bucket, event):
+        if event["fled"]:
+            bucket["fled"] += 1
+            return
+        if not event["caught"]:
+            return
+        bucket["caught"] += 1
+        if event["is_raid"]:
+            bucket["raids"] += 1
+        if event["shiny"]:
+            bucket["shiny"] += 1
+        if event["iv100"]:
+            bucket["hundo"] += 1
+        if event["shiny"] and event["iv100"]:
+            bucket["shundo"] += 1
+
+    periods = {"all": _blank_bucket()}
+    for key, _hours in SPECIES_PERIODS:
+        periods[key] = _blank_bucket()
+
+    for event in events:
+        _tally(periods["all"], event)
+        for key, _hours in SPECIES_PERIODS:
+            if event["ts"] >= cutoffs[key]:
+                _tally(periods[key], event)
+
+    caught_events = [e for e in events if e["caught"]]
+    last_caught = None
+    if caught_events:
+        newest = max(caught_events, key=lambda e: e["ts"])
+        last_caught = {
+            "ts": newest["ts"],
+            "trainer": newest["trainer"],
+            "is_raid": newest["is_raid"],
+        }
+
+    # Deliberately a separate lookup from last_caught: the most recent catch
+    # may have no GPS data, in which case the newest *located* one is older.
+    # Same distinction as get_last_event_ts() vs get_last_location().
+    located = [e for e in caught_events if e["lat"] is not None and e["lon"] is not None]
+    last_location = None
+    if located:
+        newest_located = max(located, key=lambda e: e["ts"])
+        last_location = {
+            "ts": newest_located["ts"],
+            "lat": newest_located["lat"],
+            "lon": newest_located["lon"],
+        }
+
+    return {
+        "pokemon_id": pokemon_id,
+        "name": max(events, key=lambda e: e["ts"])["name"] if events else None,
+        "trainer": trainer or None,
+        "periods": periods,
+        "last_caught": last_caught,
+        "last_location": last_location,
+    }
 
 
 def get_calendar_month(year, month, db_path=DB_PATH, tz=DEFAULT_TZ):

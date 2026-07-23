@@ -295,6 +295,14 @@ def trainers():
     return db.get_trainers()
 
 
+@router.get("/api/species/{pokemon_id}")
+def species_stats(pokemon_id: int, trainer: Optional[str] = None):
+    # Per-species drill-down behind clicking a Pokemon name in History.
+    # `trainer` mirrors the History account filter, so the numbers match the
+    # list the user clicked from rather than silently going global.
+    return db.get_species_stats(pokemon_id, trainer=trainer)
+
+
 @router.get("/api/locations")
 def locations(days: Optional[int] = None, tz: str = "UTC"):
     # days=None (the frontend leaves the param off entirely for its

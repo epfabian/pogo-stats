@@ -172,7 +172,12 @@ or Tailscale) so the whole thing runs over HTTPS.
   by Shiny only, 100% IV only, or both together (for shundos), by **account**
   (trainer), or **search by Pokemon name**, and switch between a detailed List
   view or a more compact Grid view. The account filter makes the tool usable
-  when several trainers post into the same channel.
+  when several trainers post into the same channel. **Clicking a Pokemon's
+  name** opens a per-species view: how many you've caught in the last 24
+  hours / 7 days / 30 days / all time, how many of those were shiny, 100% IV
+  or both (shundo), how many came from raids, how many fled, plus when and
+  where you last caught one. It follows whatever account filter is active,
+  and works from the Raids tab too.
 - **Raids** - a separate top-level tab with its own summary, top-boss chart,
   and paginated history.
 - **Settings** - hide your trainer name from the interface and CSV export,

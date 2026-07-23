@@ -291,7 +291,13 @@ function refreshTab(tab) {
   } else if (tab === "calendar") {
     loadCalendar(currentYear, currentMonth);
   } else if (tab === "history") {
-    loadHistoryPage(true);
+    // Never yank the user out of the species view on the periodic refresh -
+    // update the species numbers in place instead of rebuilding the list.
+    if (speciesDetailId != null) {
+      loadSpeciesDetail();
+    } else {
+      loadHistoryPage(true);
+    }
   } else if (tab === "raids") {
     loadRaidSummary();
     loadRaidTopSpecies();
@@ -791,6 +797,15 @@ function formatHistoryTimestamp(ts) {
   });
 }
 
+// The Pokemon name doubles as a link into the per-species stats view. Only
+// the numeric id is passed to the handler, so a name containing quotes or an
+// apostrophe can't break out of the inline attribute.
+function speciesLink(entry) {
+  if (entry.pokemon_id == null) return entry.pokemon_name;
+  return '<a href="javascript:void(0)" class="species-link" onclick="showSpeciesDetail(' +
+    entry.pokemon_id + ')">' + entry.pokemon_name + "</a>";
+}
+
 function renderHistoryEntry(entry) {
   let rowClass = "history-row catch";
   if (entry.event_type === "flee") rowClass = "history-row flee";
@@ -833,7 +848,7 @@ function renderHistoryEntry(entry) {
     '<div class="' + rowClass + '">' +
     '<img class="history-icon" src="' + icon + '" onerror="this.style.visibility=\'hidden\'" alt="">' +
     '<div class="history-main">' +
-    '<p class="history-name">' + entry.pokemon_name + "</p>" +
+    '<p class="history-name">' + speciesLink(entry) + "</p>" +
     '<p class="history-meta">' + formatHistoryTimestamp(entry.ts) +
     (!hideTrainerName && entry.trainer ? " · " + entry.trainer : "") + "</p>" +
     statsLine +
@@ -881,7 +896,7 @@ function renderHistoryCard(entry) {
   return (
     '<div class="' + cardClass + '">' +
     '<img class="history-icon" src="' + icon + '" onerror="this.style.visibility=\'hidden\'" alt="">' +
-    '<p class="history-name">' + entry.pokemon_name + "</p>" +
+    '<p class="history-name">' + speciesLink(entry) + "</p>" +
     '<p class="history-meta">' + formatHistoryTimestamp(entry.ts) + "</p>" +
     '<div class="history-badges">' + badges + "</div>" +
     mapLink +
@@ -1000,6 +1015,108 @@ function setHistoryDisplayMode(mode) {
   document.getElementById("history-list").classList.toggle("grid-mode", mode === "grid");
   // Re-render what's already loaded in the new layout - no need to refetch.
   renderHistoryList(lastHistoryEntries);
+}
+
+// --- Per-species detail view ---------------------------------------------
+// Clicking a Pokemon name in History (or in the Raids tab) swaps the list out
+// for a stats view for that species. Non-null while that view is open, which
+// also tells the periodic refresh to leave the list alone (see refreshTab).
+let speciesDetailId = null;
+
+const SPECIES_PERIOD_ROWS = [
+  ["24h", "Last 24 hours"],
+  ["7d", "Last 7 days"],
+  ["30d", "Last 30 days"],
+  ["all", "All time"],
+];
+
+function setHistoryBrowseVisible(visible) {
+  const display = visible ? "" : "none";
+  ["history-subtabs", "history-toolbar", "history-list", "history-load-more"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = display;
+  });
+}
+
+async function showSpeciesDetail(pokemonId) {
+  if (pokemonId == null) return;
+  speciesDetailId = pokemonId;
+  setHistoryBrowseVisible(false);
+  document.getElementById("species-detail").style.display = "";
+  // The view lives in the History tab, so a click from the Raids tab brings
+  // you here instead of duplicating the whole view over there. showTab() runs
+  // refreshTab(), which - now that speciesDetailId is set - already fetches
+  // the species data, so returning here keeps it to a single request.
+  if (currentTab !== "history") {
+    showTab("history");
+    return;
+  }
+  await loadSpeciesDetail();
+}
+
+function closeSpeciesDetail() {
+  speciesDetailId = null;
+  document.getElementById("species-detail").style.display = "none";
+  setHistoryBrowseVisible(true);
+  // The filters live in module state and their inputs were only hidden, so
+  // the list comes back exactly as the user left it.
+  loadHistoryPage(true);
+}
+
+async function loadSpeciesDetail() {
+  if (speciesDetailId == null) return;
+  // Follows the History account filter, so the numbers match the list the
+  // user clicked from rather than silently going global.
+  const trainerParam = historyTrainer ? "?trainer=" + encodeURIComponent(historyTrainer) : "";
+  const res = await fetch(APP_BASE + "/api/species/" + speciesDetailId + trainerParam);
+  renderSpeciesDetail(await res.json());
+}
+
+function renderSpeciesDetail(data) {
+  const el = document.getElementById("species-detail");
+  const name = data.name || "#" + data.pokemon_id;
+  let scope = "All accounts";
+  if (data.trainer) scope = hideTrainerName ? "Selected account" : data.trainer;
+
+  const rows = SPECIES_PERIOD_ROWS.map(function (period) {
+    const stats = (data.periods && data.periods[period[0]]) || {};
+    const cells = ["caught", "raids", "shiny", "hundo", "shundo", "fled"]
+      .map((key) => "<td>" + (stats[key] || 0) + "</td>").join("");
+    return "<tr><th>" + period[1] + "</th>" + cells + "</tr>";
+  }).join("");
+
+  let lastCaught = '<p class="top-species">No catches recorded for this Pokemon yet.</p>';
+  if (data.last_caught) {
+    lastCaught = '<p class="top-species">Last caught ' + formatRelativeTime(data.last_caught.ts) +
+      " · " + formatHistoryTimestamp(data.last_caught.ts) +
+      (data.last_caught.is_raid ? " · raid" : "") +
+      (!hideTrainerName && data.last_caught.trainer ? " · " + data.last_caught.trainer : "") +
+      "</p>";
+  }
+
+  // Separate from last_caught on purpose: the newest catch may have had no
+  // GPS data, so this can point at an older entry (or be absent entirely).
+  let lastLocation = '<span class="history-map disabled">No GPS data</span>';
+  if (data.last_location) {
+    const url = "https://www.google.com/maps?q=" + data.last_location.lat + "," + data.last_location.lon;
+    lastLocation = '<a class="history-map" href="' + url + '" target="_blank" rel="noopener">' +
+      "Last catch location</a>";
+  }
+
+  el.innerHTML =
+    '<div class="species-header">' +
+    '<img class="species-icon" src="' + spriteUrl(data.pokemon_id, false) +
+    '" onerror="this.style.visibility=\'hidden\'" alt="">' +
+    '<div class="species-heading"><p class="day-title">' + name + "</p>" +
+    '<p class="top-species">Account: ' + scope + "</p></div>" +
+    '<button class="species-back" onclick="closeSpeciesDetail()">Back</button>' +
+    "</div>" +
+    '<div class="species-table-wrap"><table class="species-table"><thead><tr>' +
+    "<th>Period</th><th>Caught</th><th>Raids</th><th>Shiny</th><th>Hundo</th>" +
+    "<th>Shundo</th><th>Fled</th>" +
+    "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
+    lastCaught +
+    '<p class="species-location">' + lastLocation + "</p>";
 }
 
 let raidBarChart;

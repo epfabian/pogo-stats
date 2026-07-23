@@ -83,11 +83,11 @@
   </div>
 
   <div class="tab-content" id="tab-history">
-    <div class="history-subtabs">
+    <div class="history-subtabs" id="history-subtabs">
       <button class="subtab-btn active" id="history-subtab-catches" onclick="setHistorySubTab('catches')">Catches</button>
       <button class="subtab-btn" id="history-subtab-raids" onclick="setHistorySubTab('raids')">Raids</button>
     </div>
-    <div class="history-toolbar">
+    <div class="history-toolbar" id="history-toolbar">
       <label for="history-filter" class="top-species" id="history-filter-label">Filter:</label>
       <select id="history-filter" onchange="onHistoryFilterChange()">
         <option value="all">All</option>
@@ -113,6 +113,7 @@
     </div>
     <div class="history-list" id="history-list"></div>
     <button class="load-more" id="history-load-more" onclick="loadMoreHistory()">Load More</button>
+    <div class="species-detail" id="species-detail" style="display: none;"></div>
   </div>
 
   <div class="tab-content" id="tab-raids">
