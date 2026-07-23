@@ -261,6 +261,12 @@ let historySearch = "";
 let historySearchDebounce = null;
 
 function showTab(tab) {
+  // Any navigation should land on the tab's normal content, never leave you
+  // stuck in a previously-opened species view - this covers the dashboard's
+  // last-catch link and notification clicks as well as the tab buttons.
+  // showSpeciesDetail re-opens the view immediately after, so it stays in
+  // control of its own case.
+  if (speciesDetailId != null) resetSpeciesView(false);
   currentTab = tab;
   document.querySelectorAll(".tab-content").forEach((el) => el.classList.remove("visible"));
   document.querySelectorAll(".tab-btn").forEach((el) => el.classList.remove("active"));
@@ -1022,6 +1028,12 @@ function setHistoryDisplayMode(mode) {
 // for a stats view for that species. Non-null while that view is open, which
 // also tells the periodic refresh to leave the list alone (see refreshTab).
 let speciesDetailId = null;
+// Leaflet instance for this view's "last catch location" map, plus the last
+// payload rendered. An unchanged periodic refresh is skipped entirely so it
+// can never rebuild (and re-centre) the map under the user - the same trick
+// the charts use with lastTimeseriesData.
+let speciesMap = null;
+let lastSpeciesData = null;
 
 const SPECIES_PERIOD_ROWS = [
   ["24h", "Last 24 hours"],
@@ -1040,27 +1052,51 @@ function setHistoryBrowseVisible(visible) {
 
 async function showSpeciesDetail(pokemonId) {
   if (pokemonId == null) return;
+  // The view lives in the History tab, so a click from the Raids tab brings
+  // you here rather than duplicating the whole view over there. Switch first:
+  // showTab() clears any open species view, so ours is opened afterwards.
+  if (currentTab !== "history") showTab("history");
   speciesDetailId = pokemonId;
+  lastSpeciesData = null;  // different species - always render fresh
   setHistoryBrowseVisible(false);
   document.getElementById("species-detail").style.display = "";
-  // The view lives in the History tab, so a click from the Raids tab brings
-  // you here instead of duplicating the whole view over there. showTab() runs
-  // refreshTab(), which - now that speciesDetailId is set - already fetches
-  // the species data, so returning here keeps it to a single request.
-  if (currentTab !== "history") {
-    showTab("history");
-    return;
-  }
   await loadSpeciesDetail();
 }
 
-function closeSpeciesDetail() {
+// Tears the view down without reloading the list itself. `clearSearch` is used
+// when the user re-enters through the History tab (see showHistoryTab).
+function resetSpeciesView(clearSearch) {
   speciesDetailId = null;
-  document.getElementById("species-detail").style.display = "none";
+  lastSpeciesData = null;
+  if (speciesMap) {
+    // The container is thrown away with the innerHTML, so drop the Leaflet
+    // instance with it rather than leaking it and its listeners.
+    speciesMap.remove();
+    speciesMap = null;
+  }
+  const detail = document.getElementById("species-detail");
+  if (detail) detail.style.display = "none";
   setHistoryBrowseVisible(true);
-  // The filters live in module state and their inputs were only hidden, so
-  // the list comes back exactly as the user left it.
+  if (clearSearch) {
+    historySearch = "";
+    const box = document.getElementById("history-search");
+    if (box) box.value = "";
+  }
+}
+
+// Back button: return to the list exactly as it was left, filters and search
+// intact - that's what "back" should do.
+function closeSpeciesDetail() {
+  resetSpeciesView(false);
   loadHistoryPage(true);
+}
+
+// The History tab button. Clicking it always lands on the list itself, even
+// from inside a species view, and clears the search box so you get the full
+// list back instead of whatever was last typed there.
+function showHistoryTab() {
+  resetSpeciesView(true);
+  showTab("history");
 }
 
 async function loadSpeciesDetail() {
@@ -1072,7 +1108,37 @@ async function loadSpeciesDetail() {
   renderSpeciesDetail(await res.json());
 }
 
+// Builds the little Leaflet map showing where the species was last caught -
+// same dark CARTO basemap and pin as the dashboard's "Last Catch Location".
+// Called after the detail HTML is in the DOM, since it needs the container.
+function renderSpeciesMap(location) {
+  if (speciesMap) {
+    speciesMap.remove();
+    speciesMap = null;
+  }
+  if (!location) return;
+  const el = document.getElementById("species-map");
+  if (!el) return;
+  speciesMap = L.map(el, { zoomControl: false, attributionControl: true })
+    .setView([location.lat, location.lon], 15);
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    subdomains: "abcd",
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+  }).addTo(speciesMap);
+  L.marker([location.lat, location.lon], { icon: lastLocationPinIcon() }).addTo(speciesMap);
+  // The container is only sized once it's visible, so nudge Leaflet after
+  // layout - same reason the dashboard map does this.
+  setTimeout(() => speciesMap.invalidateSize(), 100);
+}
+
 function renderSpeciesDetail(data) {
+  // Skip the re-render entirely when nothing changed, so the 15s refresh
+  // can't rebuild the map (and throw away the user's pan/zoom) for nothing.
+  const serialized = JSON.stringify(data);
+  if (serialized === lastSpeciesData) return;
+  lastSpeciesData = serialized;
+
   const el = document.getElementById("species-detail");
   const name = data.name || "#" + data.pokemon_id;
   let scope = "All accounts";
@@ -1096,11 +1162,16 @@ function renderSpeciesDetail(data) {
 
   // Separate from last_caught on purpose: the newest catch may have had no
   // GPS data, so this can point at an older entry (or be absent entirely).
-  let lastLocation = '<span class="history-map disabled">No GPS data</span>';
+  let locationBlock = '<p class="day-subtitle">Last catch location</p>' +
+    '<p class="top-species">No GPS data recorded for this Pokemon yet.</p>';
   if (data.last_location) {
     const url = "https://www.google.com/maps?q=" + data.last_location.lat + "," + data.last_location.lon;
-    lastLocation = '<a class="history-map" href="' + url + '" target="_blank" rel="noopener">' +
-      "Last catch location</a>";
+    locationBlock =
+      '<p class="day-subtitle">Last catch location</p>' +
+      '<div class="map-wrap species-map-wrap"><div id="species-map"></div></div>' +
+      '<p class="map-caption">' + formatHistoryTimestamp(data.last_location.ts) +
+      ' · <a class="map-caption-link" href="' + url + '" target="_blank" rel="noopener">' +
+      "Open in Google Maps</a></p>";
   }
 
   el.innerHTML =
@@ -1116,7 +1187,9 @@ function renderSpeciesDetail(data) {
     "<th>Shundo</th><th>Fled</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
     lastCaught +
-    '<p class="species-location">' + lastLocation + "</p>";
+    locationBlock;
+
+  renderSpeciesMap(data.last_location);
 }
 
 let raidBarChart;

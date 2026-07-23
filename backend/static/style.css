@@ -403,7 +403,15 @@ body {
   font-weight: 600;
   color: var(--text);
 }
-.species-location { margin: 8px 0 0; }
+.species-map-wrap {
+  height: 280px;
+  margin-top: 4px;
+}
+.map-wrap #species-map {
+  width: 100%;
+  height: 100%;
+  background: var(--surface-2);
+}
 
 .history-raid-toggle {
   display: flex;
